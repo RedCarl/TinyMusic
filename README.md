@@ -342,6 +342,42 @@ const K23: &[u8] = b"_Y8g2E6n0E1i7L5t2IoOoNk";    // 23 字节
 
 ---
 
+## 构建与发布
+
+代码仓库：<https://github.com/RedCarl/TinyMusic>
+
+推送到 `main` 后，在 Actions 里运行 **release** 工作流（或推 `v*` 标签）即可：
+
+| 平台 | 产物 |
+|---|---|
+| macOS arm64 | `TinyMusic_<版本>_aarch64.dmg` + `.app.tar.gz` + `.sig` |
+| macOS x64 | `TinyMusic_<版本>_x64.dmg` + `.app.tar.gz` + `.sig` |
+| Windows x64 | `TinyMusic_<版本>_x64-setup.exe` / `.msi` + `.sig` |
+
+工作流用 `tauri-apps/tauri-action`，自动创建 Release 并上传所有产物，
+包括自动更新用的 `latest.json`。
+
+需要的仓库 secret：
+
+```
+TAURI_SIGNING_PRIVATE_KEY          # ~/.tauri/tinymusic.key 的内容
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
+```
+
+> 私钥一旦丢失，已发布版本的自动更新就再也签不出新包，只能让用户手动下载。
+
+## 自动更新
+
+应用内 **设置 → 版本 → 检查更新**。
+
+- 更新源：`https://github.com/RedCarl/TinyMusic/releases/latest/download/latest.json`
+- 校验：minisign 签名，公钥内置在 `tauri.conf.json` 的 `plugins.updater.pubkey`
+- 流程：检查 → 显示新版本号 → 下载并安装（带进度条）→ 自动重启
+
+发新版本只需要改 `tauri.conf.json` / `package.json` / `Cargo.toml` 的版本号，
+推送后跑一次工作流，旧版本客户端就能收到更新。
+
+
 ## 体积
 
 | 项 | 大小 |
