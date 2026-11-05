@@ -1,0 +1,13 @@
+# Rust
+/target
+**/target
+
+# Node
+node_modules
+dist
+
+# 本地/机密
+*.key
+*.key.pub
+.env
+.DS_Store

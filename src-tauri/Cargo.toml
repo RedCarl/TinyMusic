@@ -1,0 +1,22 @@
+[package]
+name = "tinymusic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "TinyMusic — 轻量多平台音乐客户端"
+
+[lib]
+name = "tinymusic_app"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tinymusic-core = { path = "../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

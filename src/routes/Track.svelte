@@ -1,0 +1,124 @@
+<script lang="ts">
+  import { HugeiconsIcon } from '@hugeicons/svelte';
+  import { api, fmtDuration, isBlocked, type Track, type TrackDetail } from '../lib/api';
+  import { icons, ICON_SIZE } from '../lib/icons';
+  import { playTrack } from '../lib/player.svelte';
+  import { go } from '../lib/router.svelte';
+  import { router } from '../lib/router.svelte';
+
+  let track = $derived(router.route.name === 'track' ? (router.route.track as Track) : null);
+  let detail = $state<TrackDetail | null>(null);
+  let loading = $state(false);
+  let err = $state('');
+  let qualityMsg = $state('');
+  let probing = $state(false);
+
+  $effect(() => {
+    const t = track;
+    if (!t) return;
+    detail = null;
+    err = '';
+    loading = true;
+    api
+      .detail(t.provider, t)
+      .then((d) => (detail = d))
+      .catch((e) => (err = String(e)))
+      .finally(() => (loading = false));
+  });
+
+  async function probe(q: 'high' | 'super' | 'lossless') {
+    if (!track) return;
+    probing = true;
+    qualityMsg = '';
+    try {
+      const r = await api.resolve(track.provider, track.id, q);
+      const label = { high: '128k', super: '320k', lossless: '无损' }[q];
+      qualityMsg = `✔ ${label} 可用（${r.bytes ? (r.bytes / 1048576).toFixed(1) + ' MB' : '大小未知'}）`;
+    } catch {
+      const label = { high: '128k', super: '320k', lossless: '无损' }[q];
+      qualityMsg = `✘ ${label} 不可用（服务端只下发试听片段或拒绝）`;
+    } finally {
+      probing = false;
+    }
+  }
+</script>
+
+{#if track}
+<div class="page detail">
+  <button class="back" onclick={() => history.back()} aria-label="返回">
+    <HugeiconsIcon icon={icons.back} size={ICON_SIZE.inline} />
+    返回
+  </button>
+
+  <div class="head">
+    {#if track.cover}
+      <img class="cover" src={track.cover} alt="" />
+    {:else}
+      <div class="cover ph" aria-hidden="true">
+        <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
+      </div>
+    {/if}
+    <div class="info">
+      <h1>{track.title}</h1>
+      <div class="line">
+        <button class="link" onclick={() => go({ name: 'artist', provider: track.provider, artistId: track.artist_id, title: track.artist })}>
+          {track.artist}
+        </button>
+        {#if track.album}
+          <span class="dot">·</span>
+          <button class="link" onclick={() => go({ name: 'album', provider: track.provider, albumId: track.album_id, title: track.album })}>
+            {track.album}
+          </button>
+        {/if}
+        {#if track.duration_sec}
+          <span class="dot">·</span>
+          <span>{fmtDuration(track.duration_sec)}</span>
+        {/if}
+      </div>
+      <div class="actions">
+        <button
+          class="primary"
+          disabled={isBlocked(track.availability)}
+          onclick={() => playTrack(track)}
+          aria-label="播放"
+        >
+          <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
+          {isBlocked(track.availability) ? '不可播放' : '播放'}
+        </button>
+        <button onclick={() => probe('high')} disabled={probing}>测 128k</button>
+        <button onclick={() => probe('super')} disabled={probing}>测 320k</button>
+        <button onclick={() => probe('lossless')} disabled={probing}>测无损</button>
+      </div>
+      {#if qualityMsg}
+        <div class="qmsg">{qualityMsg}</div>
+      {/if}
+      {#if track.availability === 'vip_only'}
+        <div class="note">
+          <strong>会员曲目</strong>
+          这条信息来自搜索接口的 <code>PAY</code> 字段。本客户端会通过资源管理链路取直链，
+          未登录也能完整播放；上面的探测器可以直接验证每一档实际能拿到多少字节。
+        </div>
+      {:else}
+        <div class="note">
+          未登录状态下，酷我服务端对会员专享曲目只下发约 11 秒的占位片段。
+          客户端无法绕过——上面的探测器会直接告诉你哪一档真的能拿到整曲。
+        </div>
+      {/if}
+    </div>
+  </div>
+
+  {#if loading}
+    <div class="muted">加载歌词…</div>
+  {:else if err}
+    <div class="muted">歌词获取失败（详情接口易限流，不影响播放）：{err}</div>
+  {:else if detail && detail.lyrics.length}
+    <div class="lyrics">
+      {#each detail.lyrics as l}
+        <div class="ly">{l.text}</div>
+      {/each}
+    </div>
+  {:else}
+    <div class="muted">暂无歌词</div>
+  {/if}
+</div>
+{/if}
