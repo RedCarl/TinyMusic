@@ -32,6 +32,7 @@
   import Cloud from './routes/Cloud.svelte';
   import Lyrics from './routes/Lyrics.svelte';
   import { appCfg, refreshAppCfg } from './lib/config.svelte';
+  import { account } from './lib/account.svelte';
 
   let audio = $state<HTMLAudioElement | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
@@ -148,17 +149,22 @@
     if (audio) audio.volume = player.volume;
   });
 
+  // 侧边栏按 Apple Music 的分组方式排：顶部单项、资料库、其他、底部账号
+  const navTop = [{ name: 'search', label: '搜索', icon: icons.search }];
   // 「喜欢」存到网盘，只有网盘启用时才出现
-  const nav = $derived([
-    { name: 'search', label: '搜索', icon: icons.search },
+  const navLibrary = $derived([
     ...(appCfg.s3Enabled ? [{ name: 'library', label: '喜欢', icon: icons.favorite }] : []),
     { name: 'downloads', label: '下载', icon: icons.downloadDir },
     { name: 'cloud', label: '网盘', icon: icons.cloud },
-    { name: 'settings', label: '设置', icon: icons.settings },
   ]);
+  const navOther = [{ name: 'settings', label: '设置', icon: icons.settings }];
 
   const activeNav = $derived(
-    ['track', 'artist', 'album', 'lyrics'].includes(router.route.name) ? 'search' : router.route.name
+    ['track', 'artist', 'album', 'lyrics'].includes(router.route.name)
+      ? 'search'
+      : router.route.name === 'accountplaylists'
+        ? 'account'
+        : router.route.name
   );
 </script>
 
@@ -172,24 +178,49 @@
       class:ready={indReady}
       style="top: {indTop}px; height: {indH}px"
     ></span>
+    <!-- macOS 使用 Overlay 标题栏：给红绿灯留位置，并让这块区域可以拖动窗口 -->
+    <div class="titlebar-drag" data-tauri-drag-region aria-hidden="true"></div>
     <div class="brand">
       <span class="logo"><HugeiconsIcon icon={icons.music} size={ICON_SIZE.inline} /></span>
       <span>TinyMusic</span>
     </div>
-    <nav>
+    <nav class="side-nav">
       <!-- 必须按 name 做 key：features 异步加载后导航项会插队，
            不 key 的话 Svelte 会复用按钮，HugeiconsIcon 的 icon 属性不跟随更新，
            结果「喜欢」显示成下载图标、「下载」和「设置」都显示齿轮。 -->
-      {#each nav as n (n.name)}
+      {#each navTop as n (n.name)}
+        <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
+          <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
+        </button>
+      {/each}
+      <div class="nav-group">资料库</div>
+      {#each navLibrary as n (n.name)}
+        <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
+          <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
+        </button>
+      {/each}
+      <div class="nav-group">其他</div>
+      {#each navOther as n (n.name)}
         <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
         </button>
       {/each}
     </nav>
-    <button class="foot" class:on={activeNav === 'account'} onclick={() => go({ name: 'account' })}>
-      <span class="ico"><HugeiconsIcon icon={icons.account} size={ICON_SIZE.control} /></span>
-      <span>账号</span>
-    </button>
+    <div class="side-foot">
+      <button class="foot" class:on={activeNav === 'account'} onclick={() => go({ name: 'account' })}>
+        <span class="avatar" class:logged={!!account.uid}>
+          {#if account.uid}
+            {account.uid.slice(0, 1).toUpperCase()}
+          {:else}
+            <HugeiconsIcon icon={icons.account} size={ICON_SIZE.inline} />
+          {/if}
+        </span>
+        <span class="foot-meta">
+          <span class="foot-name">账号</span>
+          <span class="foot-sub">{account.uid ? '已登录' : '未登录'}</span>
+        </span>
+      </button>
+    </div>
   </aside>
 
   <main bind:this={mainEl}>
