@@ -172,7 +172,6 @@
         </label>
       {/each}
     </div>
-    <div class="hint">默认跟随系统；切换立即生效，只影响本机</div>
   </div>
 
   <div class="field">

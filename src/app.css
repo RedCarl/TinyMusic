@@ -3196,3 +3196,117 @@ button.primary:disabled {
   background: linear-gradient(135deg, #4f8cff, #12b981);
   box-shadow: 0 2px 8px rgba(59, 120, 231, 0.3);
 }
+
+/* ================= 侧边栏滑动选中背景 ================= */
+aside {
+  position: relative;
+}
+
+.nav-ind {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 0;
+  height: 0;
+  border-radius: var(--r);
+  background: var(--bg3);
+  box-shadow: inset 2px 0 0 var(--accent);
+  opacity: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.nav-ind.show {
+  opacity: 1;
+}
+
+.nav-ind.ready {
+  transition:
+    top 0.28s cubic-bezier(0.2, 0.7, 0.3, 1),
+    height 0.28s cubic-bezier(0.2, 0.7, 0.3, 1),
+    opacity 0.18s;
+}
+
+aside nav button,
+aside .foot {
+  position: relative;
+  z-index: 1;
+}
+
+aside nav button.on,
+aside .foot.on {
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg);
+}
+
+/* 账号页：登录卡片只占半页宽 */
+.acct-card {
+  max-width: 440px;
+  padding: 12px 14px;
+  gap: 12px;
+  margin-bottom: 0;
+}
+
+.acct-card .acct-logo {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  background: transparent;
+}
+
+.acct-card .acct-logo img {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 34px;
+  width: auto;
+  max-width: none;
+  transform: translateY(-50%);
+}
+
+
+.acct-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.acct-card.clickable:hover {
+  border-color: var(--line-strong);
+  background: var(--bg2);
+}
+
+/* 账号平台卡片：一排放四个 */
+.acct-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+  max-width: 920px;
+}
+
+.acct-card {
+  max-width: none;
+  margin: 0;
+  padding: 10px 12px;
+  gap: 10px;
+}
+
+.acct-card .acct-logo {
+  width: 30px;
+  height: 30px;
+}
+
+.acct-card .acct-logo img {
+  height: 30px;
+}
+
+.acct-card .acct-name {
+  font-size: 13px;
+}
+
+/* 账号歌单页：列表占满一行 */
+.pllist.wide {
+  max-width: none;
+}

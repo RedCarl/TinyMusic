@@ -22,6 +22,7 @@
   import Search from './routes/Search.svelte';
   import Playlist from './routes/Playlist.svelte';
   import Account from './routes/Account.svelte';
+  import AccountPlaylists from './routes/AccountPlaylists.svelte';
   import Track from './routes/Track.svelte';
   import Artist from './routes/Artist.svelte';
   import Album from './routes/Album.svelte';
@@ -34,6 +35,39 @@
 
   let audio = $state<HTMLAudioElement | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
+
+  // 侧边栏选中背景：位置跟着当前菜单滑动
+  let asideEl = $state<HTMLElement | null>(null);
+  let indTop = $state(0);
+  let indH = $state(0);
+  let indShow = $state(false);
+  let indReady = $state(false);
+
+  function measureNav() {
+    const aside = asideEl;
+    if (!aside) return;
+    const btn = aside.querySelector<HTMLElement>('button.on');
+    if (!btn) {
+      indShow = false;
+      return;
+    }
+    const ar = aside.getBoundingClientRect();
+    const br = btn.getBoundingClientRect();
+    indTop = br.top - ar.top;
+    indH = br.height;
+    indShow = true;
+  }
+
+  $effect(() => {
+    // 依赖当前菜单和「喜欢」是否出现（导航项数量会变）
+    activeNav;
+    appCfg.s3Enabled;
+    const raf = requestAnimationFrame(() => {
+      measureNav();
+      if (!indReady) requestAnimationFrame(() => (indReady = true));
+    });
+    return () => cancelAnimationFrame(raf);
+  });
 
   // 路由变化时把主区域滚回顶部。
   // 搜索页例外：它自己保存/恢复滚动位置，不能在这里重置。
@@ -128,8 +162,16 @@
   );
 </script>
 
+<svelte:window onresize={measureNav} />
+
 <div class="app">
-  <aside>
+  <aside bind:this={asideEl}>
+    <span
+      class="nav-ind"
+      class:show={indShow}
+      class:ready={indReady}
+      style="top: {indTop}px; height: {indH}px"
+    ></span>
     <div class="brand">
       <span class="logo"><HugeiconsIcon icon={icons.music} size={ICON_SIZE.inline} /></span>
       <span>TinyMusic</span>
@@ -158,6 +200,8 @@
       <Playlist />
     {:else if router.route.name === 'account'}
       <Account />
+    {:else if router.route.name === 'accountplaylists'}
+      <AccountPlaylists />
     {:else if router.route.name === 'track'}
       <Track />
     {:else if router.route.name === 'artist'}

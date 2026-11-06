@@ -11,7 +11,6 @@
 
   let tracks = $state<Track[]>([]);
   let loading = $state(true);
-  let syncing = $state(false);
   let err = $state('');
 
   async function load(pull: boolean) {
@@ -31,18 +30,6 @@
     await load(appCfg.s3Enabled);
   });
 
-  async function sync() {
-    syncing = true;
-    err = '';
-    try {
-      tracks = await api.favoritesPull();
-    } catch (e) {
-      err = String(e);
-    } finally {
-      syncing = false;
-    }
-  }
-
   function onFavChange(t: Track, fav: boolean) {
     if (!fav) {
       tracks = tracks.filter((x) => !(x.id === t.id && x.provider === t.provider));
@@ -51,15 +38,6 @@
 </script>
 
 <div class="page">
-  <div class="summary">
-    喜欢
-    <span class="muted">· {tracks.length} 首</span>
-    <button class="mini btn-ico" onclick={sync} disabled={syncing || !appCfg.s3Enabled}>
-      <HugeiconsIcon icon={icons.cloud} size={ICON_SIZE.inline} />
-      {syncing ? '同步中…' : '从网盘同步'}
-    </button>
-  </div>
-
   {#if err}<div class="err">{err}</div>{/if}
 
   {#if !appCfg.loaded || loading}

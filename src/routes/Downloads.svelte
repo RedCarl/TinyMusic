@@ -115,7 +115,6 @@
         清除记录
       </button>
     {/if}
-    <span class="hint">每首歌都会内嵌封面，并生成同名 .lrc 歌词文件</span>
   </div>
 
   {#if err}<div class="err">{err}</div>{/if}
