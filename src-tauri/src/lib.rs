@@ -767,6 +767,19 @@ const PROBE_JS: &str = r#"
 const AUTO_LOGIN_JS: &str = r#"
 (function () {
   try {
+    // 网页里的 QQ/微信扫码是 window.open 出来的，webview 不一定能触发新窗口请求，
+    // 这里直接接管，交给主进程开窗口。
+    if (!window.__kwOpenPatched) {
+      window.__kwOpenPatched = true;
+      window.open = function (u) {
+        try {
+          // 远程页面没有 IPC 权限，用 cookie 把扫码地址交给主进程
+          document.cookie = 'kwprobe_pop=' + encodeURIComponent(String(u)) + ';path=/;max-age=300';
+        } catch (e) {}
+        return null;
+      };
+    }
+
     if (!window.__kwStyleInjected) {
       var st = document.createElement('style');
       st.textContent = '.reg_text,.login_text,[class*="login"]{display:flex!important;' +
@@ -970,25 +983,40 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         .visible(false)
         .inner_size(1280.0, 800.0)
         .on_new_window(move |url, features| {
-            // QQ / 微信登录会 window.open 一个扫码页；WKWebView 默认弹不出来，这里显式建一个
+            // QQ / 微信登录会 window.open 一个扫码页；WKWebView/WebView2 默认弹不出来，这里显式建一个
             static POPUP_SEQ: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let seq = POPUP_SEQ.fetch_add(1, Ordering::Relaxed);
             let label = format!("kwlogin-pop-{seq}");
+            let target = url.clone();
+            eprintln!("[tinymusic] login popup -> {}", target);
             let builder = tauri::WebviewWindowBuilder::new(
                 &popup_app,
                 &label,
-                tauri::WebviewUrl::External(url.clone()),
+                tauri::WebviewUrl::External(target.clone()),
             )
+            // 共享父 webview 的配置/环境，opener 关系和 cookie 才能对上
             .window_features(features)
+            .inner_size(430.0, 640.0)
+            .center()
             .always_on_top(true)
-            .title("酷我登录")
+            .title("微信登录")
             .on_document_title_changed(|window, title| {
                 let _ = window.set_title(&title);
             });
             match builder.build() {
-                Ok(window) => tauri::webview::NewWindowResponse::Create { window },
-                Err(_) => tauri::webview::NewWindowResponse::Deny,
+                Ok(window) => {
+                    let _ = window.set_focus();
+                    tauri::webview::NewWindowResponse::Create { window }
+                }
+                Err(e) => {
+                    eprintln!("[tinymusic] login popup failed: {e}");
+                    // 兜底：建不出新窗口就直接在当前登录窗口里打开扫码页
+                    if let Some(w) = popup_app.get_webview_window(LOGIN_LABEL) {
+                        let _ = w.navigate(target);
+                    }
+                    tauri::webview::NewWindowResponse::Deny
+                }
             }
         })
         .build()
@@ -1007,7 +1035,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         let mut ever_modal = false;
         let mut closed_streak = 0;
         let mut misses = 0u8;
-        for i in 0..160 {
+        for i in 0..900 {
             std::thread::sleep(std::time::Duration::from_millis(200));
             let Some(w) = handle.get_webview_window(LOGIN_LABEL) else {
                 // 连续取不到才认为窗口已经被关掉
@@ -1021,14 +1049,21 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
             // 前 20 秒负责把弹窗点出来。
             // eval 失败不能 return：窗口刚建好时页面还没加载完，eval 必然报错，
             // 一旦在这里退出，后面的 show() 就永远执行不到（点了没反应）。
-            if i < 100 {
+            if i < 100 || i % 5 == 0 {
                 let _ = w.eval(AUTO_LOGIN_JS);
             }
             let cookies = w.cookies().unwrap_or_default();
             let mut modal_open = false;
             let mut has_uid = false;
+            let mut popup_url: Option<String> = None;
             for c in &cookies {
                 match c.name() {
+                    "kwprobe_pop" => {
+                        let v = url_decode(c.value());
+                        if v.starts_with("http") {
+                            popup_url = Some(v);
+                        }
+                    }
                     "kwprobe_modal" => modal_open = c.value() == "1",
                     "kwprobe_uid" => has_uid = !c.value().is_empty(),
                     name if name.to_lowercase().contains("uid") => {
@@ -1038,6 +1073,13 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                         }
                     }
                     _ => {}
+                }
+            }
+
+            if let Some(url) = popup_url {
+                let _ = w.eval("document.cookie='kwprobe_pop=;path=/;max-age=0'");
+                if let Err(e) = open_login_popup(&handle, &url) {
+                    eprintln!("[tinymusic] popup open failed: {e}");
                 }
             }
 
@@ -1207,6 +1249,51 @@ async fn login_purge(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 让窗口标题栏跟随应用主题；auto 时传 None，交还给系统
+static LOGIN_POPUP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 开一个独立的扫码窗口（微信 / QQ 的 OAuth 页）
+fn open_login_popup(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    let seq = LOGIN_POPUP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let label = format!("kwlogin-pop-{seq}");
+    let target = tauri::Url::parse(url).map_err(|e| e.to_string())?;
+    let w = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::External(target))
+        .inner_size(430.0, 640.0)
+        .center()
+        .always_on_top(true)
+        .title("微信登录")
+        .on_document_title_changed(|window, title| {
+            let _ = window.set_title(&title);
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = w.set_focus();
+    Ok(())
+}
+
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 由页面里的 window.open 钩子调用：开一个独立的扫码窗口
+#[tauri::command]
+async fn login_popup(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    open_login_popup(&app, &url)
+}
+
 #[tauri::command]
 fn set_window_theme(window: tauri::WebviewWindow, theme: Option<String>) -> Result<(), String> {
     let t = match theme.as_deref() {
@@ -2188,6 +2275,7 @@ pub fn run() {
             login_open,
             login_visible,
             login_purge,
+            login_popup,
             set_window_theme,
             login_probe,
             login_close,
