@@ -3183,3 +3183,26 @@ button.primary:disabled {
 :root[data-theme='light'] .lyrics-page {
   background: var(--bg);
 }
+
+/* 浅色下强调色按钮/徽标上的文字统一用白色，避免深色字压在蓝底上 */
+:root[data-theme='light'] .logo,
+:root[data-theme='light'] .searchbar button,
+:root[data-theme='light'] .actions .primary,
+:root[data-theme='light'] button.primary,
+:root[data-theme='light'] .mini.primary,
+:root[data-theme='light'] .count,
+:root[data-theme='light'] .play:hover:not(:disabled),
+:root[data-theme='light'] .ctrls .main:hover:not(:disabled) {
+  color: #ffffff;
+}
+
+:root[data-theme='light'] .ctrls .main,
+:root[data-theme='light'] .lp-ctrls .c.main {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+:root[data-theme='light'] .logo {
+  background: linear-gradient(135deg, #4f8cff, #12b981);
+  box-shadow: 0 2px 8px rgba(59, 120, 231, 0.3);
+}
