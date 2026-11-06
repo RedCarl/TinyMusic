@@ -9,6 +9,7 @@
     runLocal,
     runS3,
   } from '../lib/download.svelte';
+  import ProgressBar from './ProgressBar.svelte';
 
   const count = $derived(downloadUi.targets.length);
   const preview = $derived(downloadUi.targets.slice(0, 4));
@@ -127,10 +128,10 @@
       </div>
 
       {#if downloadUi.busy || downloadUi.progress}
-        <div class="modal-progress">
-          <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
-          {downloadUi.progress || '处理中…'}
-        </div>
+        <ProgressBar
+          value={downloadUi.progressPct}
+          label={downloadUi.progress || '处理中…'}
+        />
       {/if}
       {#if downloadUi.doneMsg}<div class="ok small">{downloadUi.doneMsg}</div>{/if}
       {#if downloadUi.err}<div class="err small">{downloadUi.err}</div>{/if}

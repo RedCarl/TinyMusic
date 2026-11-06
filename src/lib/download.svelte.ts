@@ -20,6 +20,8 @@ export const downloadUi = $state({
   busy: false,
   active: [] as string[],
   progress: '',
+  /** 0..1；null 表示还没有可用的百分比 */
+  progressPct: null as number | null,
   err: '',
   doneMsg: '',
   playlistLoading: false,
@@ -85,6 +87,7 @@ export async function requestDownload(tracks: Track[]) {
   downloadUi.newPlaylist = '';
   downloadUi.err = '';
   downloadUi.progress = '';
+  downloadUi.progressPct = null;
   downloadUi.doneMsg = '';
   downloadUi.busy = false;
   downloadUi.open = true;
@@ -97,24 +100,27 @@ export async function runLocal(list: Track[], onProgress?: (msg: string) => void
   downloadUi.busy = true;
   downloadUi.err = '';
   downloadUi.progress = '';
+  downloadUi.progressPct = null;
   downloadUi.doneMsg = '';
 
   try {
     if (list.length === 1) {
       const t = list[0];
       markActive(t, true);
-      onProgress?.('下载中…');
+      downloadUi.progress = '正在下载…';
+      onProgress?.('正在下载…');
       await api.downloadStart(t, q, (p) => {
         if (p.total && p.total > 0) {
-          const msg = `${Math.round((p.downloaded / p.total) * 100)}%`;
-          downloadUi.progress = msg;
-          onProgress?.(msg);
+          downloadUi.progressPct = Math.min(1, p.downloaded / p.total);
+          onProgress?.(`${Math.round((p.downloaded / p.total) * 100)}%`);
         }
       });
       downloadUi.progress = '';
+      downloadUi.progressPct = null;
       downloadUi.doneMsg = '已加入下载队列（音频 + 歌词 + 封面）';
       onProgress?.('已加入下载');
     } else {
+      downloadUi.progress = '准备中…';
       onProgress?.('准备中…');
       const ids = await api.downloadBatch(list, q, (p) => {
         if (
@@ -122,12 +128,13 @@ export async function runLocal(list: Track[], onProgress?: (msg: string) => void
           p.task_id.startsWith('batch-') &&
           !p.task_id.startsWith('batch-done')
         ) {
-          const msg = `第 ${p.downloaded + 1} / ${p.total} 首`;
-          downloadUi.progress = msg;
-          onProgress?.(msg);
+          downloadUi.progress = `第 ${p.downloaded + 1} / ${p.total} 首`;
+          downloadUi.progressPct = Math.min(1, p.downloaded / p.total);
+          onProgress?.(downloadUi.progress);
         }
       });
       downloadUi.progress = '';
+      downloadUi.progressPct = null;
       downloadUi.doneMsg = `已下载 ${ids.length} 首（音频 + 歌词 + 封面）`;
       onProgress?.(`已下载 ${ids.length} 首`);
     }
@@ -135,6 +142,7 @@ export async function runLocal(list: Track[], onProgress?: (msg: string) => void
     const msg = String(e);
     downloadUi.err = msg.includes('unavailable') ? '部分曲目不可下载（服务端没给完整音频）' : msg;
     downloadUi.progress = '';
+    downloadUi.progressPct = null;
     onProgress?.('下载失败');
   } finally {
     if (list.length === 1) markActive(list[0], false);
@@ -152,23 +160,26 @@ export async function runS3(list: Track[], playlist: string, onProgress?: (msg: 
   downloadUi.busy = true;
   downloadUi.err = '';
   downloadUi.progress = '';
+  downloadUi.progressPct = null;
   downloadUi.doneMsg = '';
 
   try {
     if (list.length === 1) {
       markActive(list[0], true);
-      onProgress?.('下载并上传…');
+      downloadUi.progress = '正在上传…';
+      onProgress?.('正在上传…');
       await api.s3Download(list[0], q, pl, (p) => {
         if (p.total && p.total > 0) {
-          const msg = `${Math.round((p.downloaded / p.total) * 100)}%`;
-          downloadUi.progress = msg;
-          onProgress?.(msg);
+          downloadUi.progressPct = Math.min(1, p.downloaded / p.total);
+          onProgress?.(`${Math.round((p.downloaded / p.total) * 100)}%`);
         }
       });
       downloadUi.progress = '';
+      downloadUi.progressPct = null;
       downloadUi.doneMsg = '已保存到网盘（音频 + 歌词 + 封面）';
       onProgress?.('已上传');
     } else {
+      downloadUi.progress = '准备中…';
       onProgress?.('准备中…');
       const keys = await api.s3DownloadBatch(list, q, pl, (p) => {
         if (
@@ -176,12 +187,13 @@ export async function runS3(list: Track[], playlist: string, onProgress?: (msg: 
           p.task_id.startsWith('batch-') &&
           !p.task_id.startsWith('batch-done')
         ) {
-          const msg = `第 ${p.downloaded + 1} / ${p.total} 首`;
-          downloadUi.progress = msg;
-          onProgress?.(msg);
+          downloadUi.progress = `第 ${p.downloaded + 1} / ${p.total} 首`;
+          downloadUi.progressPct = Math.min(1, p.downloaded / p.total);
+          onProgress?.(downloadUi.progress);
         }
       });
       downloadUi.progress = '';
+      downloadUi.progressPct = null;
       downloadUi.doneMsg = `已上传 ${keys.length} 首到网盘`;
       onProgress?.(`已上传 ${keys.length} 首`);
       void loadPlaylists();
@@ -189,6 +201,7 @@ export async function runS3(list: Track[], playlist: string, onProgress?: (msg: 
   } catch (e) {
     downloadUi.err = String(e);
     downloadUi.progress = '';
+    downloadUi.progressPct = null;
     onProgress?.('上传失败');
   } finally {
     if (list.length === 1) markActive(list[0], false);

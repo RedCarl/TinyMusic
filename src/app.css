@@ -1704,21 +1704,6 @@ input[type='range']::-moz-range-thumb {
   flex-wrap: wrap;
 }
 
-.updbar {
-  margin-top: 8px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--bg3);
-  overflow: hidden;
-}
-
-.updbar span {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.2s;
-}
-
 /* ==================================================================
    以下为后续迭代叠加的界面：弹窗 / 右键菜单 / toast / 音量 / 队列
    歌词页 / 艺人页 / 网盘页 / 设置补充。基础样式在上面的基线里。
@@ -1830,19 +1815,220 @@ button.primary:hover:not(:disabled),
   color: var(--fg2);
 }
 
-.modal-progress {
-  margin: 12px 18px 0;
-  height: 4px;
-  border-radius: 2px;
+.pbar {
+  margin: 14px 18px 0;
+}
+
+.pbar-track {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
   background: var(--bg3);
   overflow: hidden;
 }
 
-.modal-progress span {
+.pbar-fill {
   display: block;
   height: 100%;
-  background: var(--accent);
-  transition: width 0.2s;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #6aa4ff);
+  transition: width 0.25s ease;
+}
+
+.pbar-track.indeterminate .pbar-fill {
+  width: 35%;
+  animation: pbar-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes pbar-slide {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.pbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg2);
+}
+
+.pbar-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pbar-pct {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 账号歌单导入队列 ---------- */
+.impq {
+  margin: 16px 0 18px;
+  max-width: 860px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg2);
+}
+
+.impq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.impq-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.impq-count {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.impq-clear {
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.impq-clear:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.impq-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+}
+
+.impq-row + .impq-row {
+  border-top: 1px solid var(--line);
+}
+
+.impq-row:last-child {
+  padding-bottom: 2px;
+}
+
+.impq-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.impq-names {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.impq-src {
+  overflow: hidden;
+  color: var(--fg);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.impq-arrow {
+  flex: none;
+  color: var(--fg3);
+}
+
+.impq-target {
+  overflow: hidden;
+  color: var(--fg2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.impq-sub {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.impq-sub.ok {
+  color: var(--accent2);
+}
+
+.impq-sub.bad {
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.impq-side {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding-top: 1px;
+}
+
+.impq-badge {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.impq-badge.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.impq-badge.done {
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+
+.impq-badge.bad {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.impq-x {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--fg3);
+}
+
+.impq-x:hover {
+  background: var(--bg3);
+  color: var(--danger);
+}
+
+.impq .pbar {
+  margin: 8px 0 0;
+}
+
+.impq .pbar-meta {
+  font-size: 11px;
 }
 
 .dialog-input {

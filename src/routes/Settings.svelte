@@ -7,6 +7,7 @@
   import { theme, setTheme, type ThemeMode } from '../lib/theme.svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import { check, type Update } from '@tauri-apps/plugin-updater';
+  import ProgressBar from '../components/ProgressBar.svelte';
   import { relaunch } from '@tauri-apps/plugin-process';
 
   // ---- 更新 ----
@@ -291,8 +292,8 @@
       {/if}
     </div>
     {#if updMsg}<div class="ok small">{updMsg}</div>{/if}
-    {#if progress > 0 && progress < 100}
-      <div class="updbar"><span style="width:{progress}%"></span></div>
+    {#if updBusy && pending}
+      <ProgressBar value={progress / 100} label="正在下载更新…" />
     {/if}
     {#if updErr}<div class="err small">{updErr}</div>{/if}
   </div>
