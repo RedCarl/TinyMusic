@@ -24,7 +24,7 @@
   let dragIndex = $state<number | null>(null);
   let suppressClick = false;
   let startY = 0;
-  let dragging = false;
+  let dragging = $state(false);
 
   function onRowMouseDown(e: MouseEvent, i: number) {
     if (e.button !== 0) return;

@@ -1948,19 +1948,27 @@ button.primary:hover:not(:disabled),
 }
 
 .qp-item {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
+  /* 这个按钮里装的是一整行：序号 / 标题·艺人 / 时长 */
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  text-align: left;
   color: var(--fg3);
-  flex: none;
+  background: none;
+  border: none;
 }
 
 .qp-i {
   width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   flex: none;
+  font-size: 11px;
+  color: var(--fg3);
 }
 
 .qp-t {
@@ -2693,4 +2701,65 @@ button.primary:disabled {
 
 .cloud .plrow.dragging .plgrip {
   cursor: grabbing;
+}
+
+/* ================= 滚动条：全平台统一成细的深色条 =================
+   Windows / WebView2 默认是 15px 的浅色原生滚动条，在深色面板里非常突兀。
+   这里对所有可滚动元素统一成 8px 圆角深灰条（WebKit 用伪元素，Firefox 用标准属性）。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2b323d transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #2b323d;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #3d4654;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ================= 播放列表：行布局兜底 ================= */
+.queue-panel {
+  width: 360px;
+}
+
+.qp-list {
+  min-height: 0;
+  scrollbar-gutter: stable;
+}
+
+.qp-row {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.qp-t {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.qp-name {
+  line-height: 1.35;
+}
+
+.qp-artist {
+  line-height: 1.3;
 }
