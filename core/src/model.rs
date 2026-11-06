@@ -153,6 +153,12 @@ pub struct ArtistPage {
     pub artist_id: String,
     pub name: String,
     pub pic: Option<String>,
+    /// 歌手简介（来自 PC 歌手页，可能很长）
+    #[serde(default)]
+    pub desc: Option<String>,
+    /// 基本资料：生日 / 地区 / 身高 / 星座 之类的键值对
+    #[serde(default)]
+    pub meta: Vec<(String, String)>,
     pub albums: Vec<AlbumRef>,
     pub tracks: Vec<Track>,
 }

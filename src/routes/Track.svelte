@@ -1,10 +1,13 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, fmtDuration, isBlocked, type Track, type TrackDetail } from '../lib/api';
+  import { api, coverUrl, fmtDuration, isBlocked, type Track, type TrackDetail } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { playTrack } from '../lib/player.svelte';
   import { go } from '../lib/router.svelte';
   import { router } from '../lib/router.svelte';
+  import { openMenuAt } from '../lib/contextmenu.svelte';
+  import { requestDownload } from '../lib/download.svelte';
+  import { copyText } from '../lib/toast.svelte';
 
   let track = $derived(router.route.name === 'track' ? (router.route.track as Track) : null);
   let detail = $state<TrackDetail | null>(null);
@@ -26,16 +29,36 @@
       .finally(() => (loading = false));
   });
 
-  async function probe(q: 'high' | 'super' | 'lossless') {
+  function coverMenu(e: MouseEvent) {
+    if (!track) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openMenuAt(e.clientX, e.clientY, [
+      {
+        label: '下载这首歌（含歌词与封面）',
+        icon: icons.download,
+        disabled: isBlocked(track.availability),
+        run: () => requestDownload([track as Track]),
+      },
+      { sep: true },
+      {
+        label: '复制歌曲 ID',
+        icon: icons.link,
+        run: () => copyText(track!.id, '已复制歌曲 ID'),
+      },
+    ]);
+  }
+
+  async function probe(q: 'high' | 'super') {
     if (!track) return;
     probing = true;
     qualityMsg = '';
     try {
       const r = await api.resolve(track.provider, track.id, q);
-      const label = { high: '128k', super: '320k', lossless: '无损' }[q];
+      const label = { high: '128k', super: '320k' }[q];
       qualityMsg = `✔ ${label} 可用（${r.bytes ? (r.bytes / 1048576).toFixed(1) + ' MB' : '大小未知'}）`;
     } catch {
-      const label = { high: '128k', super: '320k', lossless: '无损' }[q];
+      const label = { high: '128k', super: '320k' }[q];
       qualityMsg = `✘ ${label} 不可用（服务端只下发试听片段或拒绝）`;
     } finally {
       probing = false;
@@ -52,9 +75,9 @@
 
   <div class="head">
     {#if track.cover}
-      <img class="cover" src={track.cover} alt="" />
+      <img class="cover" src={coverUrl(track.cover, 500)} alt="" oncontextmenu={coverMenu} />
     {:else}
-      <div class="cover ph" aria-hidden="true">
+      <div class="cover ph" aria-hidden="true" oncontextmenu={coverMenu}>
         <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
       </div>
     {/if}
@@ -87,7 +110,6 @@
         </button>
         <button onclick={() => probe('high')} disabled={probing}>测 128k</button>
         <button onclick={() => probe('super')} disabled={probing}>测 320k</button>
-        <button onclick={() => probe('lossless')} disabled={probing}>测无损</button>
       </div>
       {#if qualityMsg}
         <div class="qmsg">{qualityMsg}</div>

@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::id3;
-use crate::model::{Quality, StreamInfo, Track};
+use crate::model::{LyricLine, Quality, StreamInfo, Track};
 use crate::providers::kuwo::PLACEHOLDER_BYTES;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +14,42 @@ use tokio::io::AsyncWriteExt;
 
 /// 进度回调：(已下载字节, 总字节)
 pub type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+
+/// 下载时要一并写入的附加内容：封面（嵌进音频标签）与歌词（同名 .lrc）
+#[derive(Debug, Clone, Default)]
+pub struct DownloadExtras {
+    pub cover: Option<Vec<u8>>,
+    pub cover_mime: String,
+    pub lyrics_lrc: Option<String>,
+}
+
+/// 把歌词行拼成标准 LRC 文本。
+///
+/// 开头写 UTF-8 BOM：Windows 上的老播放器（千千静听、部分车载）默认按本地代码页读，
+/// 没有 BOM 的中文会乱码。
+pub fn build_lrc(track: &Track, lyrics: &[LyricLine]) -> String {
+    let mut out = String::from("\u{feff}");
+    out.push_str(&format!("[ti:{}]\n", track.title));
+    out.push_str(&format!("[ar:{}]\n", track.artist));
+    if !track.album.is_empty() {
+        out.push_str(&format!("[al:{}]\n", track.album));
+    }
+    out.push_str("[by:TinyMusic]\n");
+
+    let mut lines: Vec<&LyricLine> = lyrics.iter().filter(|l| !l.text.trim().is_empty()).collect();
+    lines.sort_by_key(|l| l.time_ms);
+    for l in lines {
+        let ms = l.time_ms;
+        out.push_str(&format!(
+            "[{:02}:{:02}.{:02}]{}\n",
+            ms / 60_000,
+            (ms % 60_000) / 1000,
+            (ms % 1000) / 10,
+            l.text.trim_end()
+        ));
+    }
+    out
+}
 
 pub struct Downloader {
     http: Arc<HttpClient>,
@@ -24,13 +60,17 @@ impl Downloader {
         Self { http }
     }
 
-    /// 下载到 `dir/fname`，返回最终路径
+    /// 下载到 `dir/fname`，返回最终路径。
+    ///
+    /// 如果 `extras` 里有封面，会写进 ID3 的 APIC 帧（封面随文件走）；
+    /// 如果有歌词，会在音频旁边生成同名 `.lrc`。
     pub async fn run(
         &self,
         track: &Track,
         info: &StreamInfo,
         dir: &Path,
         fname: &str,
+        extras: &DownloadExtras,
         on_progress: ProgressFn,
     ) -> Result<PathBuf> {
         tokio::fs::create_dir_all(dir).await?;
@@ -69,18 +109,36 @@ impl Downloader {
             }
         }
 
-        // 写标签后改名
+        // 写标签（含封面）后改名
         let tmp = part_path.clone();
         let title = track.title.clone();
         let artist = track.artist.clone();
         let album = track.album.clone();
+        let cover = extras.cover.clone();
+        let mime = if extras.cover_mime.trim().is_empty() {
+            "image/jpeg".to_string()
+        } else {
+            extras.cover_mime.clone()
+        };
         tokio::task::spawn_blocking(move || {
-            id3::write_tags(&tmp, &title, &artist, &album).map_err(Error::Io)
+            let cover_ref = cover
+                .as_ref()
+                .map(|c| (c.as_slice(), mime.as_str()));
+            id3::write_tags_with_cover(&tmp, &title, &artist, &album, cover_ref).map_err(Error::Io)
         })
         .await
         .map_err(|e| Error::Http(format!("标签写入线程失败: {e}")))??;
 
         tokio::fs::rename(&part_path, &final_path).await?;
+
+        // 歌词：和音频同名，放在同一个目录
+        if let Some(lrc) = &extras.lyrics_lrc {
+            if !lrc.trim().is_empty() {
+                let lrc_path = final_path.with_extension("lrc");
+                let _ = tokio::fs::write(&lrc_path, lrc.as_bytes()).await;
+            }
+        }
+
         on_progress(written, Some(written));
         Ok(final_path)
     }
@@ -168,6 +226,28 @@ mod tests {
         let t = Track::default();
         assert_eq!(sanitize_filename(""), "unknown");
         assert!(build_filename(&t, "mp3").ends_with(".mp3"));
+    }
+
+    #[test]
+    fn builds_lrc_text() {
+        let t = Track {
+            title: "稻香".into(),
+            artist: "周杰伦".into(),
+            album: "魔杰座".into(),
+            ..Default::default()
+        };
+        let lines = vec![
+            LyricLine { time_ms: 65_430, text: "第二句".into() },
+            LyricLine { time_ms: 3_250, text: "第一句".into() },
+        ];
+        let lrc = build_lrc(&t, &lines);
+        assert!(lrc.starts_with('\u{feff}'));
+        assert!(lrc.contains("[ti:稻香]"));
+        assert!(lrc.contains("[ar:周杰伦]"));
+        assert!(lrc.contains("[00:03.25]第一句"));
+        assert!(lrc.contains("[01:05.43]第二句"));
+        // 时间顺序应被修正
+        assert!(lrc.find("[00:03.25]").unwrap() < lrc.find("[01:05.43]").unwrap());
     }
 
     #[test]

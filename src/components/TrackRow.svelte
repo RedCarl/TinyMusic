@@ -1,8 +1,12 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, fmtDuration, isBlocked, type Track, type Quality } from '../lib/api';
+  import { api, fmtDuration, isBlocked, type Track } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
-  import { playTrack, player } from '../lib/player.svelte';
+  import { playTrack, player, toggle, isCurrent } from '../lib/player.svelte';
+  import { requestDownload, isPending } from '../lib/download.svelte';
+  import { openTrackMenu } from '../lib/trackMenu.svelte';
+  import { appCfg } from '../lib/config.svelte';
+  import { showToast } from '../lib/toast.svelte';
   import { go } from '../lib/router.svelte';
 
   let {
@@ -17,13 +21,14 @@
     onFavoriteChange?: (t: Track, fav: boolean) => void;
   } = $props();
 
-  let dl = $state({ running: false, pct: 0, msg: '' });
+  let msg = $state('');
   let fav = $state(false);
   let favLoaded = $state(false);
 
-  const isCurrent = $derived(
-    player.current?.id === track.id && player.current?.provider === track.provider
-  );
+  const current = $derived(isCurrent(track));
+  const loading = $derived(current && (player.status === 'loading' || player.loading));
+  const playing = $derived(current && player.status === 'playing');
+  const pending = $derived(isPending(track));
 
   async function checkFav() {
     if (favLoaded) return;
@@ -41,41 +46,42 @@
         await api.favoriteRemove(track.provider, track.id);
         fav = false;
         onFavoriteChange?.(track, false);
+        showToast('已取消喜欢');
       } else {
         await api.favoriteAdd(track);
         fav = true;
         onFavoriteChange?.(track, true);
+        showToast('已收藏到网盘');
       }
     } catch (e) {
-      dl.msg = String(e);
+      msg = String(e);
     }
   }
 
-  async function download() {
-    if (dl.running) return;
-    dl = { running: true, pct: 0, msg: '' };
-    try {
-      const q = (localStorage.getItem('quality') as Quality) || 'high';
-      await api.downloadStart(track, q, (p) => {
-        if (p.total) dl.pct = Math.min(100, Math.floor((p.downloaded / p.total) * 100));
-        else dl.pct = 0;
-      });
-      // 后台任务已启动，进度由列表页统一展示；这里给个提示
-      dl = { running: false, pct: 100, msg: '已加入下载' };
-      setTimeout(() => (dl = { running: false, pct: 0, msg: '' }), 2500);
-    } catch (e) {
-      const msg = String(e);
-      dl = {
-        running: false,
-        pct: 0,
-        msg: msg.includes('unavailable') || msg.includes('会员') ? '不可下载' : '下载失败'
-      };
-      setTimeout(() => (dl = { running: false, pct: 0, msg: '' }), 3000);
+  function onPlay() {
+    if (current) {
+      toggle();
+    } else {
+      void playTrack(track, queue);
     }
   }
 
   const unavailable = $derived(isBlocked(track.availability));
   const vipOnly = $derived(track.availability === 'vip_only');
+
+  const playLabel = $derived(
+    unavailable
+      ? '不可播放'
+      : loading
+        ? '加载中'
+        : playing
+          ? '暂停'
+          : current
+            ? '继续播放'
+            : vipOnly
+              ? '会员曲目（可播放）'
+              : '播放'
+  );
 
   // 挂载后查询一次收藏状态（避免依赖悬停事件）
   $effect(() => {
@@ -85,11 +91,20 @@
 
 <div
   class="row"
-  class:current={isCurrent}
+  class:current
   class:unavailable
+  role="group"
+  oncontextmenu={(e) =>
+    openTrackMenu(e, track, {
+      queue,
+      onFavorite: (f) => {
+        fav = f;
+        onFavoriteChange?.(track, f);
+      },
+    })}
 >
   <div class="idx">
-    {#if isCurrent && player.playing}
+    {#if current && playing}
       <span class="bars"><i></i><i></i><i></i></span>
     {:else}
       {index + 1}
@@ -98,12 +113,18 @@
 
   <button
     class="play"
-    title={vipOnly ? '会员曲目（可播放）' : unavailable ? '已下架' : '播放'}
-    aria-label={unavailable ? '不可播放' : '播放'}
+    title={playLabel}
+    aria-label={playLabel}
     disabled={unavailable}
-    onclick={() => playTrack(track, queue)}
+    onclick={onPlay}
   >
-    <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
+    {#if loading}
+      <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
+    {:else if playing}
+      <HugeiconsIcon icon={icons.pause} size={ICON_SIZE.inline} />
+    {:else}
+      <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
+    {/if}
   </button>
 
   <div class="title">
@@ -132,28 +153,32 @@
   <div class="dur">{fmtDuration(track.duration_sec)}</div>
 
   <div class="ops">
-    {#if dl.msg}
-      <span class="tip">{dl.msg}</span>
-    {:else if dl.running}
-      <span class="tip">{dl.pct}%</span>
+    {#if msg}
+      <span class="tip">{msg}</span>
     {/if}
     <button
       class="icon"
-      title="下载"
-      aria-label="下载"
-      disabled={unavailable || dl.running}
-      onclick={download}
+      title={pending ? '正在下载' : '下载（含歌词与封面）'}
+      aria-label={pending ? '正在下载' : '下载'}
+      disabled={unavailable || pending}
+      onclick={() => requestDownload([track])}
     >
-      <HugeiconsIcon icon={icons.download} size={ICON_SIZE.inline} />
+      {#if pending}
+        <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
+      {:else}
+        <HugeiconsIcon icon={icons.download} size={ICON_SIZE.inline} />
+      {/if}
     </button>
-    <button
-      class="icon"
-      class:on={fav}
-      title={fav ? '取消收藏' : '收藏'}
-      aria-label={fav ? '取消收藏' : '收藏'}
-      onclick={toggleFav}
-    >
-      <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.inline} />
-    </button>
+    {#if appCfg.s3Enabled}
+      <button
+        class="icon"
+        class:on={fav}
+        title={fav ? '取消喜欢' : '喜欢（收藏到网盘）'}
+        aria-label={fav ? '取消喜欢' : '喜欢'}
+        onclick={toggleFav}
+      >
+        <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.inline} />
+      </button>
+    {/if}
   </div>
 </div>

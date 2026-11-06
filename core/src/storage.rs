@@ -50,7 +50,25 @@ CREATE TABLE IF NOT EXISTS saved_playlists (
   track_count INTEGER, creator TEXT, added_at INTEGER,
   PRIMARY KEY (provider, playlist_id)
 );
+CREATE TABLE IF NOT EXISTS s3_playlists (
+  name TEXT PRIMARY KEY, created_at INTEGER,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
 "#;
+
+/// 老库缺列时补上（SQLite 没有 ADD COLUMN IF NOT EXISTS）
+fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) {
+    let exists: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name=?1", table),
+            [column],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        let _ = conn.execute_batch(ddl);
+    }
+}
 
 fn now_ts() -> i64 {
     std::time::SystemTime::now()
@@ -66,6 +84,12 @@ impl Storage {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        ensure_column(
+            &conn,
+            "s3_playlists",
+            "sort_order",
+            "ALTER TABLE s3_playlists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -74,6 +98,12 @@ impl Storage {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        ensure_column(
+            &conn,
+            "s3_playlists",
+            "sort_order",
+            "ALTER TABLE s3_playlists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+        );
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -311,6 +341,46 @@ impl Storage {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    // ---------- 网盘歌单 ----------
+
+    pub fn save_s3_playlist(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO s3_playlists (name, created_at, sort_order)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM s3_playlists))",
+            params![name, now_ts()],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_s3_playlists(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT name FROM s3_playlists ORDER BY sort_order ASC, created_at ASC")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 按前端拖拽后的顺序重排歌单
+    pub fn reorder_s3_playlists(&self, names: &[String]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for (i, name) in names.iter().enumerate() {
+            tx.execute(
+                "UPDATE s3_playlists SET sort_order=?1 WHERE name=?2",
+                params![i as i64, name],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_s3_playlist(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM s3_playlists WHERE name=?1", params![name])?;
+        Ok(())
+    }
+
     pub fn is_saved_playlist(&self, provider: &str, id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let n: i64 = conn.query_row(
@@ -423,6 +493,30 @@ mod tests {
         assert_eq!(s.list_saved_playlists().unwrap().len(), 1);
         s.remove_playlist("kuwo", "2867496601").unwrap();
         assert!(s.list_saved_playlists().unwrap().is_empty());
+    }
+
+    #[test]
+    fn s3_playlists_roundtrip() {
+        let s = Storage::open_in_memory().unwrap();
+        s.save_s3_playlist("周杰伦").unwrap();
+        s.save_s3_playlist("通勤").unwrap();
+        s.save_s3_playlist("周杰伦").unwrap(); // 幂等
+        assert_eq!(s.list_s3_playlists().unwrap(), vec!["周杰伦", "通勤"]);
+        s.remove_s3_playlist("周杰伦").unwrap();
+        assert_eq!(s.list_s3_playlists().unwrap(), vec!["通勤"]);
+    }
+
+    #[test]
+    fn s3_playlists_reorder() {
+        let s = Storage::open_in_memory().unwrap();
+        for n in ["A", "B", "C"] {
+            s.save_s3_playlist(n).unwrap();
+        }
+        s.reorder_s3_playlists(&["C".into(), "A".into(), "B".into()])
+            .unwrap();
+        assert_eq!(s.list_s3_playlists().unwrap(), vec!["C", "A", "B"]);
+        s.save_s3_playlist("D").unwrap();
+        assert_eq!(s.list_s3_playlists().unwrap(), vec!["C", "A", "B", "D"]);
     }
 
     #[test]

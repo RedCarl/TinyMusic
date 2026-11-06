@@ -15,6 +15,7 @@ export type Route =
   | { name: 'album'; provider: string; albumId: string; title: string }
   | { name: 'account' }
   | { name: 'downloads' }
+  | { name: 'cloud' }
   | { name: 'library' }
   | { name: 'settings' };
 

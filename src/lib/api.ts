@@ -47,6 +47,8 @@ export interface ArtistPage {
   artist_id: string;
   name: string;
   pic: string | null;
+  desc: string | null;
+  meta: [string, string][];
   albums: AlbumRef[];
   tracks: Track[];
 }
@@ -88,6 +90,37 @@ export interface Settings {
   download_dir: string;
   default_quality: Quality;
   concurrency: number;
+  // ---- 网盘（S3 兼容） ----
+  s3_enabled: boolean;
+  s3_endpoint: string;
+  s3_region: string;
+  s3_bucket: string;
+  s3_access_key: string;
+  s3_secret_key: string;
+  s3_prefix: string;
+  s3_path_style: boolean;
+  // ---- 托盘 ----
+  close_to_tray: boolean;
+}
+
+/** 网盘里的歌单（= 桶内按目录归类） */
+export interface S3PlaylistInfo {
+  name: string;
+  count: number;
+  cover?: string | null;
+}
+
+/** 一次「歌单导入网盘」的结果 */
+export interface S3TrackRow {
+  key: string;
+  track: Track;
+}
+
+export interface S3ImportResult {
+  playlist: string;
+  total: number;
+  uploaded: number;
+  failed: number;
 }
 
 export interface PlaylistRef {
@@ -173,6 +206,7 @@ export const api = {
   favoriteRemove: (provider: string, id: string) =>
     invoke<void>('favorite_remove', { provider, id }),
   favoriteList: () => invoke<Track[]>('favorite_list'),
+  favoritesPull: () => invoke<Track[]>('favorites_pull'),
   favoriteCheck: (provider: string, id: string) =>
     invoke<boolean>('favorite_check', { provider, id }),
 
@@ -204,6 +238,7 @@ export const api = {
   /** 打开酷我网页登录窗口 */
   loginOpen: () => invoke<void>('login_open'),
   /** 探测是否已登录，返回 uid */
+  loginVisible: () => invoke<boolean>('login_visible'),
   loginProbe: () => invoke<string | null>('login_probe'),
   loginClose: () => invoke<void>('login_close'),
 
@@ -239,6 +274,59 @@ export const api = {
   settingsGet: () => invoke<Settings>('settings_get'),
   settingsSet: (settings: Settings) => invoke<void>('settings_set', { settings }),
   openDownloadDir: () => invoke<void>('open_download_dir'),
+
+  // ---- 网盘（S3） ----
+  s3Test: () => invoke<string>('s3_test'),
+  s3Playlists: () => invoke<S3PlaylistInfo[]>('s3_playlists'),
+  s3PlaylistCreate: (name: string) => invoke<string>('s3_playlist_create', { name }),
+  s3PlaylistDelete: (name: string) => invoke<void>('s3_playlist_purge', { name }),
+  s3PlaylistRename: (oldName: string, newName: string) =>
+    invoke<string>('s3_playlist_rename', { old: oldName, new: newName }),
+  s3PlaylistTracks: (name: string) => invoke<S3TrackRow[]>('s3_playlist_tracks', { name }),
+  s3ReorderPlaylists: (names: string[]) => invoke<void>('s3_playlists_reorder', { names }),
+  s3TrackDelete: (key: string) => invoke<void>('s3_track_delete', { key }),
+  s3Download: (
+    track: Track,
+    quality: Quality,
+    playlist: string,
+    onProgress: (p: Progress) => void
+  ) => {
+    const ch = new Channel<Progress>();
+    ch.onmessage = onProgress;
+    return invoke<string>('s3_download', { track, quality, playlist, onProgress: ch });
+  },
+  s3DownloadBatch: (
+    tracks: Track[],
+    quality: Quality,
+    playlist: string,
+    onProgress: (p: Progress) => void
+  ) => {
+    const ch = new Channel<Progress>();
+    ch.onmessage = onProgress;
+    return invoke<string[]>('s3_download_batch', { tracks, quality, playlist, onProgress: ch });
+  },
+
+  /** 把一个平台歌单整张导入到网盘（后台逐首下载 + 上传） */
+  s3ImportPlaylist: (
+    provider: string,
+    playlistId: string,
+    name: string,
+    target: string,
+    onProgress: (p: Progress) => void
+  ) => {
+    const ch = new Channel<Progress>();
+    ch.onmessage = onProgress;
+    return invoke<S3ImportResult>('s3_import_playlist', {
+      provider,
+      playlistId,
+      name,
+      target,
+      onProgress: ch,
+    });
+  },
+
+  /** 把主窗口收进托盘（播放不中断） */
+  hideToTray: () => invoke<void>('hide_to_tray'),
 };
 
 export function fmtDuration(sec: number): string {
@@ -253,6 +341,18 @@ export function fmtBytes(n: number | null | undefined): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** 音质代码 → 中文，下载记录等处直接展示 */
+export const QUALITY_LABEL: Record<string, string> = {
+  standard: '标准',
+  high: '高品',
+  super: '超高',
+  lossless: '无损',
+};
+
+export function qualityLabel(q: string): string {
+  return QUALITY_LABEL[q] ?? q;
 }
 
 export const AVAILABILITY_LABEL: Record<Availability, string> = {
@@ -283,6 +383,17 @@ export function parsePlaylistId(input: string): string | null {
     t.match(/[?&](?:id|pid|playlistid)=(\d+)/i) ||
     t.match(/(\d{6,})/);
   return m ? m[1] : null;
+}
+
+/**
+ * 酷我封面 URL 自带尺寸段（如 `/star/albumcover/120/...`），
+ * 把尺寸段换成更大的值就能拿到同图的高清版（实测 500/800/1000 都可用）。
+ * 列表缩略图继续用 120，详情/歌词这种大图再用这个函数换大图。
+ */
+export function coverUrl(url: string | null | undefined, size = 500): string {
+  if (!url) return '';
+  if (!/kuwo\.cn/i.test(url)) return url;
+  return url.replace(/\/(\d{2,4})\//, `/${size}/`);
 }
 
 export function fmtCount(n: number): string {

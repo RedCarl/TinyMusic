@@ -29,6 +29,9 @@ url = "2"
 # 用于解 musicinfo 的自定义包（[u32][u32][zlib]），纯 Rust 后端避免 C 依赖
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 base64 = "0.22"
+# S3 SigV4 签名（只用 SHA-256 / HMAC-SHA256，不引 aws-sdk）
+sha2 = "0.10"
+hmac = "0.12"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }

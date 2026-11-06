@@ -36,6 +36,116 @@ pub const PLAYLIST_HOST: &str = "nplserver.kuwo.cn";
 pub const RES_MANAGE_HOST: &str = "deliver.kuwo.cn";
 
 pub const COVER_BASE: &str = "https://img1.kuwo.cn/star/albumcover/";
+
+/// 歌手资料：头像 + 简介 + 基本资料
+#[derive(Debug, Clone, Default)]
+pub struct SingerProfile {
+    pub name: Option<String>,
+    pub pic: Option<String>,
+    pub bio: Option<String>,
+    pub meta: Vec<(String, String)>,
+}
+
+/// 从 PC 歌手页的 `window.__NUXT__` 里抠出歌手资料。
+///
+/// 页面里的 `singerInfo:{birthday:"...",info:"..."}` 是 JS 对象字面量，
+/// 键不带引号、字符串里还有 `\u002F` / `\n` 这类转义，不是合法 JSON，
+/// 所以这里按字段名扫描并逐字符反转义。
+pub fn parse_singer_page(html: &str) -> SingerProfile {
+    let Some(start) = html.find("singerInfo:{") else {
+        return SingerProfile::default();
+    };
+    let rest = &html[start..];
+    // 对象是内联的，遇到 `}}` 就是结尾；给个上限防御异常页面
+    let end = rest.find("}}").map(|e| e + 2).unwrap_or(rest.len().min(120_000));
+    let obj = &rest[..end];
+
+    let pick = |keys: &[&str]| -> Option<String> {
+        keys.iter().find_map(|k| js_field(obj, k)).filter(|s| !s.is_empty())
+    };
+
+    let pic = pick(&["pic300", "pic120", "pic70"])
+        .map(|s| crate::text::clean(&s))
+        .filter(|s| s.starts_with("http"));
+    let bio = pick(&["info"])
+        .map(|s| crate::text::clean(&s))
+        .filter(|s| !s.is_empty());
+
+    let mut meta = Vec::new();
+    for (label, key) in [
+        ("外文名", "aartist"),
+        ("生日", "birthday"),
+        ("地区", "country"),
+        ("出生地", "birthplace"),
+        ("身高", "tall"),
+        ("体重", "weight"),
+        ("星座", "constellation"),
+        ("语言", "language"),
+    ] {
+        if let Some(v) = pick(&[key]) {
+            let v = crate::text::clean(&v);
+            if !v.is_empty() && v != "0" && v != "0cm" && v != "0kg" {
+                meta.push((label.to_string(), v));
+            }
+        }
+    }
+
+    let name = pick(&["name"]).map(|s| crate::text::clean(&s)).filter(|s| !s.is_empty());
+
+    SingerProfile { name, pic, bio, meta }
+}
+
+/// 在 JS 对象字面量里取 `key:"value"` 的字符串值（处理 JS 转义）
+fn js_field(obj: &str, key: &str) -> Option<String> {
+    let pat = format!("{}:\"", key);
+    let mut search = 0;
+    while let Some(pos) = obj[search..].find(&pat) {
+        let abs = search + pos;
+        // 必须是完整字段名：前面是 { 或 , 或空格
+        let boundary_ok = abs == 0 || matches!(obj.as_bytes()[abs - 1], b'{' | b',' | b' ');
+        if !boundary_ok {
+            search = abs + pat.len();
+            continue;
+        }
+
+        let chars: Vec<char> = obj[abs + pat.len()..].chars().collect();
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '"' {
+                return Some(out);
+            }
+            if c == '\\' {
+                let Some(n) = chars.get(i + 1).copied() else { break };
+                match n {
+                    'u' if i + 5 < chars.len() => {
+                        let hex: String = chars[i + 2..i + 6].iter().collect();
+                        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                            Some(ch) => out.push(ch),
+                            None => out.push(' '),
+                        }
+                        i += 6;
+                        continue;
+                    }
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push(' '),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    other => out.push(other),
+                }
+                i += 2;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        return None;
+    }
+    None
+}
 pub const ARTIST_PIC_BASE: &str = "https://img1.kuwo.cn/star/starheads/";
 
 /// 服务端对「无权益」请求固定下发的占位资源
@@ -47,6 +157,7 @@ pub struct KuwoProvider {
     search_cache: TtlCache<String, SearchPage>,
     detail_cache: TtlCache<String, TrackDetail>,
     resolve_cache: TtlCache<String, StreamInfo>,
+    profile_cache: TtlCache<String, SingerProfile>,
 }
 
 impl Default for KuwoProvider {
@@ -66,6 +177,7 @@ impl KuwoProvider {
             search_cache: TtlCache::new(Duration::from_secs(600), 256),
             detail_cache: TtlCache::new(Duration::from_secs(6 * 3600), 256),
             resolve_cache: TtlCache::new(Duration::from_secs(24 * 3600), 512),
+            profile_cache: TtlCache::new(Duration::from_secs(24 * 3600), 128),
         }
     }
 
@@ -609,6 +721,47 @@ impl KuwoProvider {
             availability: Availability::Available,
         }))
     }
+
+    /// 歌手资料（头像 / 简介 / 基本资料），带 24h 缓存
+    async fn artist_profile(&self, id: &str) -> SingerProfile {
+        let id = id.trim();
+        if id.is_empty() {
+            return SingerProfile::default();
+        }
+        if let Some(hit) = self.profile_cache.get(&id.to_string()) {
+            return hit;
+        }
+
+        let url = format!("https://www.kuwo.cn/singer_detail/{}", id);
+        let mut profile = match self.http.get_text("www.kuwo.cn", &url).await {
+            Ok(html) => parse_singer_page(&html),
+            Err(_) => SingerProfile::default(),
+        };
+
+        if profile.pic.is_none() {
+            profile.pic = self.artist_pic(id).await;
+        }
+
+        self.profile_cache.put(id.to_string(), profile.clone());
+        profile
+    }
+
+    /// 兜底头像：酷我歌手写真接口（纯文本，每行一个 URL）
+    async fn artist_pic(&self, id: &str) -> Option<String> {
+        let url = format!(
+            "http://artistpicserver.kuwo.cn/pic.web?type=big_artist_pic&pictype=url&content=list&id={}&name=&from=pc&json=0&size=1",
+            id
+        );
+        let body = self
+            .http
+            .get_text("artistpicserver.kuwo.cn", &url)
+            .await
+            .ok()?;
+        body.lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("http"))
+            .map(|l| l.replacen("http://", "https://", 1))
+    }
 }
 
 
@@ -665,6 +818,8 @@ impl MusicProvider for KuwoProvider {
 
     async fn artist(&self, artist_id: &str, name: &str, page: u32) -> Result<ArtistPage> {
         let sp = self.search(name, page, 50).await?;
+        // 头像/简介：PC 歌手页拿得到就优先用，拿不到退回搜索首条的专辑封面
+        let profile = self.artist_profile(artist_id).await;
         let mut tracks: Vec<Track> = sp
             .items
             .iter()
@@ -692,10 +847,21 @@ impl MusicProvider for KuwoProvider {
             });
         }
 
+        let pic = profile
+            .pic
+            .clone()
+            .or_else(|| tracks.first().and_then(|t| t.cover.clone()));
+
         Ok(ArtistPage {
             artist_id: artist_id.to_string(),
-            name: name.to_string(),
-            pic: None,
+            name: if name.is_empty() {
+                profile.name.clone().unwrap_or_default()
+            } else {
+                name.to_string()
+            },
+            pic,
+            desc: profile.bio.clone(),
+            meta: profile.meta.clone(),
             albums,
             tracks,
         })
@@ -890,6 +1056,21 @@ pub fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_singer_page_profile() {
+        let html = r#"<script>window.__NUXT__=(function(a,b){return {layout:"default",data:[{singerInfo:{birthday:"1979-01-18",country:"中国台湾",pic300:"https:\u002F\u002Fstar.kuwo.cn\u002Fstarheads\u002F300\u002Fx.jpg",info:"周杰伦，华语流行男歌手。&nbsp;\n基本资料",name:"周杰伦"}}]};})</script>"#;
+        let p = parse_singer_page(html);
+        assert_eq!(p.name.as_deref(), Some("周杰伦"));
+        assert_eq!(
+            p.pic.as_deref(),
+            Some("https://star.kuwo.cn/starheads/300/x.jpg")
+        );
+        assert!(p.bio.unwrap_or_default().contains("华语流行男歌手"));
+        assert!(p.meta.iter().any(|(k, v)| k == "生日" && v == "1979-01-18"));
+        assert!(p.meta.iter().any(|(k, v)| k == "地区" && v == "中国台湾"));
+    }
+
 
     const SEARCH_FIXTURE: &str = include_str!("../../../tests/fixtures/search_daoxiang.json");
     const ESCAPED_FIXTURE: &str = include_str!("../../../tests/fixtures/search_escaped.json");

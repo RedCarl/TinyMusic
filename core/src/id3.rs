@@ -6,6 +6,7 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
 const FRAME_TIT2: &[u8; 4] = b"TIT2";
+const FRAME_APIC: &[u8; 4] = b"APIC";
 const FRAME_TPE1: &[u8; 4] = b"TPE1";
 const FRAME_TALB: &[u8; 4] = b"TALB";
 const FRAME_TYER: &[u8; 4] = b"TYER";
@@ -17,6 +18,18 @@ fn syncsafe(n: u32) -> [u8; 4] {
         ((n >> 7) & 0x7F) as u8,
         (n & 0x7F) as u8,
     ]
+}
+
+fn frame(id: &[u8; 4], body: Vec<u8>) -> Vec<u8> {
+    if body.is_empty() {
+        return Vec::new();
+    }
+    let mut frame = Vec::with_capacity(10 + body.len());
+    frame.extend_from_slice(id);
+    frame.extend_from_slice(&(body.len() as u32).to_be_bytes()); // v2.3: 普通大端
+    frame.extend_from_slice(&[0x00, 0x00]); // flags
+    frame.extend_from_slice(&body);
+    frame
 }
 
 fn text_frame(id: &[u8; 4], text: &str) -> Vec<u8> {
@@ -31,22 +44,42 @@ fn text_frame(id: &[u8; 4], text: &str) -> Vec<u8> {
     }
     // 结尾的 UTF-16 NUL
     body.extend_from_slice(&[0x00, 0x00]);
-
-    let mut frame = Vec::with_capacity(10 + body.len());
-    frame.extend_from_slice(id);
-    frame.extend_from_slice(&(body.len() as u32).to_be_bytes()); // v2.3: 普通大端
-    frame.extend_from_slice(&[0x00, 0x00]); // flags
-    frame.extend_from_slice(&body);
-    frame
+    frame(id, body)
 }
 
-/// 构造完整 ID3v2.3 标签块
-pub fn build_tag(title: &str, artist: &str, album: &str, year: &str) -> Vec<u8> {
+/// 封面帧（APIC）。v2.3 里编码字节 0x00 = ISO-8859-1，
+/// 但图片数据本身是二进制，真正要紧的是后面的 MIME 与图片类型。
+pub fn picture_frame(mime: &str, data: &[u8]) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let mime = if mime.trim().is_empty() { "image/jpeg" } else { mime.trim() };
+    let mut body = Vec::with_capacity(data.len() + mime.len() + 8);
+    body.push(0x00); // ISO-8859-1
+    body.extend_from_slice(mime.as_bytes());
+    body.push(0x00); // MIME 终止符
+    body.push(0x03); // 图片类型：3 = 封面（front cover）
+    body.push(0x00); // 描述为空（ISO-8859-1 终止符）
+    body.extend_from_slice(data);
+    frame(FRAME_APIC, body)
+}
+
+/// 构造完整 ID3v2.3 标签块（可附带封面）
+pub fn build_tag_ext(
+    title: &str,
+    artist: &str,
+    album: &str,
+    year: &str,
+    cover: Option<(&[u8], &str)>,
+) -> Vec<u8> {
     let mut frames = Vec::new();
     frames.extend(text_frame(FRAME_TIT2, title));
     frames.extend(text_frame(FRAME_TPE1, artist));
     frames.extend(text_frame(FRAME_TALB, album));
     frames.extend(text_frame(FRAME_TYER, year));
+    if let Some((data, mime)) = cover {
+        frames.extend(picture_frame(mime, data));
+    }
 
     let mut out = Vec::with_capacity(10 + frames.len());
     out.extend_from_slice(b"ID3");
@@ -55,6 +88,11 @@ pub fn build_tag(title: &str, artist: &str, album: &str, year: &str) -> Vec<u8> 
     out.extend_from_slice(&syncsafe(frames.len() as u32));
     out.extend_from_slice(&frames);
     out
+}
+
+/// 构造完整 ID3v2.3 标签块（不带封面）
+pub fn build_tag(title: &str, artist: &str, album: &str, year: &str) -> Vec<u8> {
+    build_tag_ext(title, artist, album, year, None)
 }
 
 /// 若文件已有 ID3v2 标签，返回其总长度（用于剥离，避免叠加标签）
@@ -75,12 +113,13 @@ pub fn existing_tag_len<R: Read + Seek>(r: &mut R) -> std::io::Result<u64> {
     Ok(10 + size + footer)
 }
 
-/// 给一个音频文件写入标签（先剥离旧标签）
-pub fn write_tags(
+/// 给一个音频文件写入标签（先剥离旧标签），可同时写入封面
+pub fn write_tags_with_cover(
     path: &std::path::Path,
     title: &str,
     artist: &str,
     album: &str,
+    cover: Option<(&[u8], &str)>,
 ) -> std::io::Result<()> {
     let mut src = std::fs::File::open(path)?;
     let skip = existing_tag_len(&mut src)?;
@@ -90,7 +129,7 @@ pub fn write_tags(
     src.read_to_end(&mut audio)?;
     drop(src);
 
-    let tag = build_tag(title, artist, album, "");
+    let tag = build_tag_ext(title, artist, album, "", cover);
     let tmp = path.with_extension("tagged.tmp");
     {
         let mut out = std::fs::File::create(&tmp)?;
@@ -100,6 +139,16 @@ pub fn write_tags(
     }
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+/// 给一个音频文件写入标签（不带封面）
+pub fn write_tags(
+    path: &std::path::Path,
+    title: &str,
+    artist: &str,
+    album: &str,
+) -> std::io::Result<()> {
+    write_tags_with_cover(path, title, artist, album, None)
 }
 
 #[cfg(test)]
@@ -130,6 +179,22 @@ mod tests {
         assert!(len > 0);
         // 编码字节为 0x01（UTF-16）
         assert_eq!(tag[pos + 10], 0x01);
+    }
+
+    #[test]
+    fn embeds_cover_frame() {
+        let cover = b"\xFF\xD8FAKEJPEG";
+        let tag = build_tag_ext("标题", "艺人", "专辑", "", Some((cover, "image/jpeg")));
+        let pos = tag
+            .windows(4)
+            .position(|w| w == b"APIC")
+            .expect("缺 APIC 帧");
+        let len = u32::from_be_bytes([tag[pos + 4], tag[pos + 5], tag[pos + 6], tag[pos + 7]]);
+        assert!(len as usize > cover.len());
+        // MIME 出现在帧体里
+        let body = &tag[pos + 10..pos + 10 + len as usize];
+        assert!(body.windows(10).any(|w| w == b"image/jpeg"));
+        assert!(body.ends_with(cover));
     }
 
     #[test]

@@ -1,74 +1,89 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, type PlaylistDetail, type Track } from '../lib/api';
+  import { api, type Track } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
-  import { account } from '../lib/account.svelte';
+  import { appCfg, refreshAppCfg } from '../lib/config.svelte';
   import { go } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
 
-  let data = $state<PlaylistDetail | null>(null);
+  let tracks = $state<Track[]>([]);
+  let loading = $state(true);
+  let syncing = $state(false);
   let err = $state('');
-  let loading = $state(false);
 
-  $effect(() => {
-    const uid = account.uid;
-    if (!uid) {
-      data = null;
-      return;
-    }
+  async function load(pull: boolean) {
     loading = true;
     err = '';
-    api
-      .favorites(account.provider, uid)
-      .then((d) => (data = d))
-      .catch((e) => {
-        err = String(e);
-        data = null;
-      })
-      .finally(() => (loading = false));
+    try {
+      tracks = pull ? await api.favoritesPull() : await api.favoriteList();
+    } catch (e) {
+      err = String(e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  onMount(async () => {
+    await refreshAppCfg();
+    await load(appCfg.s3Enabled);
   });
 
-  const tracks = $derived<Track[]>(data?.tracks ?? []);
+  async function sync() {
+    syncing = true;
+    err = '';
+    try {
+      tracks = await api.favoritesPull();
+    } catch (e) {
+      err = String(e);
+    } finally {
+      syncing = false;
+    }
+  }
+
+  function onFavChange(t: Track, fav: boolean) {
+    if (!fav) {
+      tracks = tracks.filter((x) => !(x.id === t.id && x.provider === t.provider));
+    }
+  }
 </script>
 
 <div class="page">
   <div class="summary">
-    喜欢{#if data} · {data.playlist.name} · {tracks.length} 首{/if}
+    喜欢
+    <span class="muted">· {tracks.length} 首</span>
+    <button class="mini btn-ico" onclick={sync} disabled={syncing || !appCfg.s3Enabled}>
+      <HugeiconsIcon icon={icons.cloud} size={ICON_SIZE.inline} />
+      {syncing ? '同步中…' : '从网盘同步'}
+    </button>
   </div>
 
-  {#if !account.uid}
+  {#if err}<div class="err">{err}</div>{/if}
+
+  {#if !appCfg.loaded || loading}
+    <div class="muted">读取中…</div>
+  {:else if !appCfg.s3Enabled}
     <div class="empty">
       <div class="big" aria-hidden="true">
         <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.empty} />
       </div>
-      <p>登录后这里会显示账号的「喜欢」</p>
-      <p class="muted small">收藏是账号数据，需要先登录</p>
-      <button class="primary" onclick={() => go({ name: 'account' })}>
-        <HugeiconsIcon icon={icons.login} size={ICON_SIZE.inline} />
-        去登录
-      </button>
-    </div>
-  {:else if loading}
-    <div class="muted">读取中…</div>
-  {:else if err}
-    <div class="err">{err}</div>
-    <div class="note">
-      「喜欢」是账号里的 <code>type=MYFAVORITE</code> 歌单。如果提示没有该歌单，
-      说明这个账号还没在客户端里点过红心。
+      <p>喜欢存在网盘里</p>
+      <button class="primary btn-ico" onclick={() => go({ name: 'settings' })}>启用网盘</button>
     </div>
   {:else if tracks.length === 0}
     <div class="empty">
       <div class="big" aria-hidden="true">
         <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.empty} />
       </div>
-      <p>「喜欢」里还没有歌曲</p>
+      <p>还没有喜欢的歌曲</p>
+      <p class="muted small">点歌曲右边的红心，会自动收藏并下载到网盘</p>
     </div>
   {:else}
     <BatchBar {tracks} />
     <div class="list">
-      {#each tracks as t, i (t.provider + t.id + i)}
-        <TrackRow track={t} index={i} queue={tracks} />
+      {#each tracks as t, i (t.provider + t.id)}
+        <TrackRow track={t} index={i} queue={tracks} onFavoriteChange={onFavChange} />
       {/each}
     </div>
   {/if}

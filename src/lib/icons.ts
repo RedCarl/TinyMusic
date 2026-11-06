@@ -7,11 +7,16 @@
  * * 图标名不许凭记忆拼 —— 这些名字都用 MCP search_icons 解析过，
  *   并用 `grep "declare const <Name>" node_modules/@hugeicons/core-free-icons/dist/types/index.d.ts` 校验存在
  * * 尺寸只用三档：16（行内操作）/ 18（导航与播放控制）/ 40（空状态）
+ *
+ * 侧边栏特别处理：`download` 用「下载目录」图标（文件夹+箭头），
+ * `settings` 用齿轮 —— 两者形状差异明显，不会再看成同一个按钮；
+ * 「喜欢」统一用爱心（HeartIcon）。
  */
 import {
   Search01Icon,
-  StarIcon,
+  HeartIcon,
   Download01Icon,
+  FolderDownloadIcon,
   Settings01Icon,
   MusicNote01Icon,
   PlayIcon,
@@ -19,6 +24,7 @@ import {
   PreviousIcon,
   NextIcon,
   VolumeIcon,
+  VolumeOffIcon,
   ArrowLeft01Icon,
   FolderOpenIcon,
   Playlist01Icon,
@@ -26,12 +32,32 @@ import {
   Login01Icon,
   PlusIcon,
   LinkIcon,
+  ShuffleIcon,
+  RepeatIcon,
+  RepeatOne01Icon,
+  ListMusicIcon,
+  Queue01Icon,
+  ChevronUpIcon,
+  Cancel01Icon,
+  CloudUploadIcon,
+  HistoryIcon,
+  TrashIcon,
+  Loading03Icon,
+  DiscIcon,
+  QuoteIcon,
+  Refresh01Icon,
+  PencilEdit01Icon,
+  DragDropVerticalIcon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
   search: Search01Icon,
-  favorite: StarIcon,
+  /** 喜欢（爱心） */
+  favorite: HeartIcon,
+  /** 单曲下载 */
   download: Download01Icon,
+  /** 侧边栏「下载」页：带箭头的文件夹，避免和齿轮图标混 */
+  downloadDir: FolderDownloadIcon,
   settings: Settings01Icon,
   music: MusicNote01Icon,
   play: PlayIcon,
@@ -39,6 +65,7 @@ export const icons = {
   previous: PreviousIcon,
   next: NextIcon,
   volume: VolumeIcon,
+  volumeOff: VolumeOffIcon,
   back: ArrowLeft01Icon,
   folder: FolderOpenIcon,
   playlist: Playlist01Icon,
@@ -46,6 +73,24 @@ export const icons = {
   login: Login01Icon,
   plus: PlusIcon,
   link: LinkIcon,
+  // ---- 播放列表 / 播放顺序 ----
+  shuffle: ShuffleIcon,
+  repeat: RepeatIcon,
+  repeatOne: RepeatOne01Icon,
+  list: ListMusicIcon,
+  queue: Queue01Icon,
+  chevronUp: ChevronUpIcon,
+  close: Cancel01Icon,
+  // ---- 网盘 / 历史 / 其他 ----
+  cloud: CloudUploadIcon,
+  history: HistoryIcon,
+  trash: TrashIcon,
+  loading: Loading03Icon,
+  disc: DiscIcon,
+  lyric: QuoteIcon,
+  refresh: Refresh01Icon,
+  edit: PencilEdit01Icon,
+  grip: DragDropVerticalIcon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */

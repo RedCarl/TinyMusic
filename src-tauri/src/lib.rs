@@ -3,16 +3,20 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::{Manager, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, State};
 
-use tinymusic_core::download::{build_filename, Downloader};
+use tinymusic_core::download::{build_filename, build_lrc, DownloadExtras, Downloader};
 use tinymusic_core::http::HttpClient;
 use tinymusic_core::model::*;
 use tinymusic_core::proxy::StreamProxy;
 use tinymusic_core::providers::kuwo::KuwoProvider;
+use tinymusic_core::s3::{S3Config, S3};
 use tinymusic_core::storage::{DownloadRow, Storage};
 
 // ---------- 设置 ----------
@@ -23,10 +27,44 @@ pub struct Settings {
     pub default_quality: String,
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
+
+    // ---- 网盘（S3 兼容）----
+    #[serde(default)]
+    pub s3_enabled: bool,
+    #[serde(default)]
+    pub s3_endpoint: String,
+    #[serde(default = "default_region")]
+    pub s3_region: String,
+    #[serde(default)]
+    pub s3_bucket: String,
+    #[serde(default)]
+    pub s3_access_key: String,
+    #[serde(default)]
+    pub s3_secret_key: String,
+    #[serde(default = "default_s3_prefix")]
+    pub s3_prefix: String,
+    #[serde(default)]
+    pub s3_path_style: bool,
+
+    // ---- 窗口 / 托盘 ----
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
 }
 
 fn default_concurrency() -> u32 {
     2
+}
+
+fn default_region() -> String {
+    "us-east-1".into()
+}
+
+fn default_s3_prefix() -> String {
+    "TinyMusic".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -35,6 +73,15 @@ impl Default for Settings {
             download_dir: dirs_download(),
             default_quality: "high".into(),
             concurrency: 2,
+            s3_enabled: false,
+            s3_endpoint: String::new(),
+            s3_region: default_region(),
+            s3_bucket: String::new(),
+            s3_access_key: String::new(),
+            s3_secret_key: String::new(),
+            s3_prefix: default_s3_prefix(),
+            s3_path_style: false,
+            close_to_tray: true,
         }
     }
 }
@@ -91,6 +138,197 @@ fn save_settings(dir: &std::path::Path, s: &Settings) {
     }
 }
 
+// ---------- 网盘辅助 ----------
+
+fn s3_client(state: &AppState) -> Result<S3, String> {
+    let s = state.settings_snapshot();
+    let cfg = S3Config {
+        endpoint: s.s3_endpoint.trim().to_string(),
+        region: s.s3_region.trim().to_string(),
+        bucket: s.s3_bucket.trim().to_string(),
+        access_key: s.s3_access_key.trim().to_string(),
+        secret_key: s.s3_secret_key.trim().to_string(),
+        prefix: s.s3_prefix.clone(),
+        path_style: s.s3_path_style,
+    };
+    if !cfg.is_ready() {
+        return Err(
+            "请先在 设置 → 网盘（S3）里填写 Endpoint / Bucket / Access Key / Secret Key".into(),
+        );
+    }
+    Ok(S3::new(cfg, state.http.client().clone()))
+}
+
+/// 歌单在网盘里就是一个前缀目录
+fn playlist_prefix(prefix: &str, playlist: &str) -> String {
+    let p = prefix.trim().trim_matches('/');
+    let pl = playlist.trim().trim_matches('/');
+    match (p.is_empty(), pl.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("{}/", p),
+        (true, false) => format!("{}/", pl),
+        (false, false) => format!("{}/{}/", p, pl),
+    }
+}
+
+fn object_key(prefix: &str, playlist: &str, track: &Track, ext: &str) -> String {
+    format!(
+        "{}{}",
+        playlist_prefix(prefix, playlist),
+        build_filename(track, ext)
+    )
+}
+
+fn replace_ext(key: &str, ext: &str) -> String {
+    match key.rfind('.') {
+        Some(i) if !key[i + 1..].contains('/') => format!("{}.{}", &key[..i], ext),
+        _ => format!("{}.{}", key, ext),
+    }
+}
+
+fn is_audio_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    [".mp3", ".flac", ".m4a", ".ogg", ".wav"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+}
+
+fn audio_content_type(key: &str) -> &'static str {
+    let lower = key.to_ascii_lowercase();
+    if lower.ends_with(".flac") {
+        "audio/flac"
+    } else if lower.ends_with(".m4a") || lower.ends_with(".mp4") {
+        "audio/mp4"
+    } else if lower.ends_with(".ogg") {
+        "audio/ogg"
+    } else {
+        "audio/mpeg"
+    }
+}
+
+fn sniff_image_mime(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else if bytes.starts_with(b"RIFF") && bytes.len() > 12 && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
+}
+
+fn sanitize_playlist_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim().replace(['/', '\\'], "-");
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("歌单名不能为空".into());
+    }
+    if name.chars().count() > 60 {
+        return Err("歌单名太长了（最多 60 个字符）".into());
+    }
+    Ok(name)
+}
+
+/// 网盘里的「喜欢」歌单目录名
+const FAVORITES_PLAYLIST: &str = "喜欢";
+
+fn favorites_object_key(prefix: &str) -> String {
+    let p = prefix.trim().trim_matches('/');
+    if p.is_empty() {
+        "favorites.json".into()
+    } else {
+        format!("{}/favorites.json", p)
+    }
+}
+
+/// 把本地喜欢列表写成网盘上的 favorites.json
+async fn push_favorites(state: &AppState) -> Result<(), String> {
+    let client = s3_client(state)?;
+    let list = state
+        .storage
+        .list_favorites()
+        .map_err(|e| e.to_string())?;
+    let key = favorites_object_key(&client.config().prefix);
+    let body = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
+    client
+        .put_object(&key, body, "application/json; charset=utf-8")
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 点喜欢之后：同步 favorites.json，并把这歌下载到网盘「喜欢」目录
+async fn sync_favorite_track(state: &AppState, track: &Track) -> Result<(), String> {
+    push_favorites(state).await?;
+
+    let client = s3_client(state)?;
+    let settings = state.settings_snapshot();
+    let q = Quality::from_str(&settings.default_quality);
+    let p = state.provider(&track.provider)?;
+    let info = p.resolve(&track.id, q).await.map_err(|e| e.to_string())?;
+
+    let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+    let task_id = format!("fav-{}-{}", seq, track.id);
+    state
+        .storage
+        .insert_download(&task_id, track, info.quality, "", 0, "running")
+        .map_err(|e| e.to_string())?;
+
+    match upload_track_to_s3(
+        state,
+        &client,
+        track,
+        &info,
+        FAVORITES_PLAYLIST,
+        &task_id,
+        None,
+    )
+    .await
+    {
+        Ok(_) => {
+            let _ = state.storage.save_s3_playlist(FAVORITES_PLAYLIST);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = state
+                .storage
+                .update_download(&task_id, &format!("failed: {}", e), 0);
+            Err(e)
+        }
+    }
+}
+
+/// 下载时顺带准备的封面与歌词（都允许失败，失败就只下音频）
+async fn build_extras(
+    http: &HttpClient,
+    provider: &dyn MusicProvider,
+    track: &Track,
+) -> DownloadExtras {
+    let mut extras = DownloadExtras::default();
+
+    if let Some(url) = track.cover.as_deref() {
+        if !url.trim().is_empty() {
+            if let Ok(Ok(bytes)) =
+                tokio::time::timeout(Duration::from_secs(10), http.get_bytes("img", url)).await
+            {
+                if !bytes.is_empty() && bytes.len() < 8 * 1024 * 1024 {
+                    extras.cover_mime = sniff_image_mime(&bytes).to_string();
+                    extras.cover = Some(bytes);
+                }
+            }
+        }
+    }
+
+    // 详情接口容易限流/变慢：超时就只下音频，不阻塞整个下载
+    if let Ok(Ok(detail)) =
+        tokio::time::timeout(Duration::from_secs(12), provider.detail(track)).await
+    {
+        if !detail.lyrics.is_empty() {
+            extras.lyrics_lrc = Some(build_lrc(track, &detail.lyrics));
+        }
+    }
+
+    extras
+}
+
 // ---------- 命令 ----------
 
 #[tauri::command]
@@ -129,8 +367,53 @@ async fn track_detail(
     provider: String,
     track: Track,
 ) -> Result<TrackDetail, String> {
+    if provider == "s3" {
+        let client = s3_client(&state)?;
+        let lyrics = match client.get_object(&replace_ext(&track.id, "lrc")).await {
+            Ok(Some(bytes)) => parse_lrc(&String::from_utf8_lossy(&bytes)),
+            _ => Vec::new(),
+        };
+        return Ok(TrackDetail {
+            track,
+            lyrics,
+            preview_range_ms: None,
+        });
+    }
     let p = state.provider(&provider)?;
     p.detail(&track).await.map_err(|e| e.to_string())
+}
+
+/// LRC 文本 → 歌词行（同一句可以挂多个时间戳）
+fn parse_lrc(text: &str) -> Vec<LyricLine> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let mut rest = raw.trim();
+        let mut stamps = Vec::new();
+        while let Some(tail) = rest.strip_prefix('[') {
+            let Some(end) = tail.find(']') else { break };
+            let tag = &tail[..end];
+            match tag.split_once(':').and_then(|(m, s)| {
+                let m: f64 = m.trim().parse().ok()?;
+                let s: f64 = s.trim().parse().ok()?;
+                Some(m * 60_000.0 + s * 1000.0)
+            }) {
+                Some(ms) => {
+                    stamps.push(ms.max(0.0) as u32);
+                    rest = &tail[end + 1..];
+                }
+                None => break,
+            }
+        }
+        let line = rest.trim();
+        for ms in stamps {
+            out.push(LyricLine {
+                time_ms: ms,
+                text: line.to_string(),
+            });
+        }
+    }
+    out.sort_by_key(|l| l.time_ms);
+    out
 }
 
 #[tauri::command]
@@ -169,6 +452,16 @@ async fn player_open(
     id: String,
     quality: String,
 ) -> Result<PlayerSource, String> {
+    // 网盘里的歌：给一个 6 小时有效的签名直链，不经过平台取链
+    if provider == "s3" {
+        let client = s3_client(&state)?;
+        let url = client.presign_get(&id, 6 * 3600).map_err(|e| e.to_string())?;
+        return Ok(PlayerSource {
+            url,
+            quality: "high".into(),
+            bytes: None,
+        });
+    }
     let p = state.provider(&provider)?;
     let q = Quality::from_str(&quality);
     let info = p.resolve(&id, q).await.map_err(|e| e.to_string())?;
@@ -222,10 +515,14 @@ async fn download_start(
     let tid = task_id.clone();
     let dl = state.downloader.clone();
     let storage = state.storage.clone();
+    let http = state.http.clone();
+    let provider = p.clone();
     let track2 = track.clone();
     let quality2 = info.quality;
 
     tauri::async_runtime::spawn(async move {
+        // 封面（嵌进 ID3）与歌词（同名 .lrc）都顺带准备好
+        let extras = build_extras(&http, provider.as_ref(), &track2).await;
         let ch = on_progress.clone();
         let tid2 = tid.clone();
         let res = dl
@@ -234,6 +531,7 @@ async fn download_start(
                 &info,
                 &dir,
                 &fname,
+                &extras,
                 Box::new(move |downloaded, total| {
                     let _ = ch.send(Progress {
                         task_id: tid2.clone(),
@@ -286,12 +584,28 @@ fn download_list(state: State<'_, AppState>) -> Result<Vec<DownloadRow>, String>
 }
 
 #[tauri::command]
-fn favorite_add(state: State<'_, AppState>, track: Track) -> Result<(), String> {
-    state.storage.add_favorite(&track).map_err(|e| e.to_string())
+fn favorite_add(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    track: Track,
+) -> Result<(), String> {
+    state
+        .storage
+        .add_favorite(&track)
+        .map_err(|e| e.to_string())?;
+    // 网络操作放后台：喜欢是即时动作，不能被下载/上传卡住
+    let app2 = app.clone();
+    let track2 = track.clone();
+    tauri::async_runtime::spawn(async move {
+        let st = app2.state::<AppState>();
+        let _ = sync_favorite_track(&st, &track2).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
 fn favorite_remove(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     provider: String,
     id: String,
@@ -299,7 +613,13 @@ fn favorite_remove(
     state
         .storage
         .remove_favorite(&provider, &id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let st = app2.state::<AppState>();
+        let _ = push_favorites(&st).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -317,6 +637,25 @@ fn favorite_check(
         .storage
         .is_favorite(&provider, &id)
         .map_err(|e| e.to_string())
+}
+
+/// 从网盘拉取 favorites.json，合并进本地（用于多设备/重装后恢复）
+#[tauri::command]
+async fn favorites_pull(state: State<'_, AppState>) -> Result<Vec<Track>, String> {
+    let client = match s3_client(&state) {
+        Ok(c) => c,
+        Err(_) => return state.storage.list_favorites().map_err(|e| e.to_string()),
+    };
+    let key = favorites_object_key(&client.config().prefix);
+    let remote = match client.get_object(&key).await.map_err(|e| e.to_string())? {
+        Some(bytes) => serde_json::from_slice::<Vec<Track>>(&bytes).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    for t in &remote {
+        let _ = state.storage.upsert_track(t);
+        let _ = state.storage.add_favorite(t);
+    }
+    state.storage.list_favorites().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -423,41 +762,100 @@ const PROBE_JS: &str = r#"
 const AUTO_LOGIN_JS: &str = r#"
 (function () {
   try {
-    // 1) 点开登录弹窗（只点一次）
-    if (!window.__kwLoginOpened) {
-      // 窄视口下站点会用媒体查询把「登录/注册」隐藏起来换成汉堡菜单。
-      // 这里把它强制显示回来，这样窄窗口里也能直接点到。
-      if (!window.__kwStyleInjected) {
-        var st = document.createElement('style');
-        st.textContent = '.reg_text{display:flex!important;visibility:visible!important;' +
-                         'opacity:1!important;width:auto!important;height:auto!important;}' +
-                         '.reg_text span{display:inline!important;}';
-        document.head.appendChild(st);
-        window.__kwStyleInjected = true;
-      }
-      var trigger = document.querySelector('.reg_text');
-      if (trigger) {
-        ['mousedown', 'mouseup', 'click'].forEach(function (type) {
-          trigger.dispatchEvent(new MouseEvent(type, {
-            bubbles: true, cancelable: true, view: window
-          }));
-        });
-        window.__kwLoginOpened = true;
+    if (!window.__kwStyleInjected) {
+      var st = document.createElement('style');
+      st.textContent = '.reg_text,.login_text,[class*="login"]{display:flex!important;' +
+                       'visibility:visible!important;opacity:1!important;}' +
+                       '.reg_text span{display:inline!important;}';
+      document.head.appendChild(st);
+      window.__kwStyleInjected = true;
+    }
+
+    // 先判断登录弹窗是否已经打开
+    var open = false;
+    // 1) 站点自己的登录遮罩（最准）
+    var reg = document.querySelector('.reg_login');
+    if (reg && reg.offsetParent !== null) open = true;
+    // 2) 文本特征：弹窗底部一定有「快捷登录」/用户协议
+    if (!open) {
+      var tips = document.querySelectorAll('span,a,div,p');
+      for (var t = 0; t < tips.length && t < 3000; t++) {
+        var tx = (tips[t].textContent || '');
+        if (tx.indexOf('快捷登录') >= 0 || tx.indexOf('酷我音乐用户服务协议') >= 0) {
+          if (tips[t].offsetParent !== null) { open = true; break; }
+        }
       }
     }
-    // 2) 上报弹窗是否还开着：靠「固定定位 + 高 z-index + 体积够大」识别遮罩层。
-    //    站点标题栏虽然也是 fixed，但高度很小，被宽高条件排除。
-    var open = false;
-    var nodes = document.querySelectorAll('div');
-    for (var i = 0; i < nodes.length; i++) {
-      var cs = getComputedStyle(nodes[i]);
-      if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
-      var z = parseInt(cs.zIndex, 10) || 0;
-      if (z < 100) continue;
-      var r = nodes[i].getBoundingClientRect();
-      if (r.width > 300 && r.height > 300) { open = true; break; }
+    // 3) fixed + 高 z-index + 面积够大
+    if (!open) {
+      var boxes = document.querySelectorAll('div');
+      for (var i = 0; i < boxes.length; i++) {
+        var cs = getComputedStyle(boxes[i]);
+        if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+        if ((parseInt(cs.zIndex, 10) || 0) < 100) continue;
+        var r = boxes[i].getBoundingClientRect();
+        if (r.width > 300 && r.height > 300) { open = true; break; }
+      }
     }
     document.cookie = 'kwprobe_modal=' + (open ? '1' : '0') + '; path=/; domain=.kuwo.cn';
+    if (open) return;
+
+    // 给入口加一个醒目的框 + 提示（DOM 注入不受 isTrusted 限制）
+    if (!window.__kwHinted) {
+      var entry = document.querySelector('.reg_text');
+      if (entry) {
+        entry.style.setProperty('outline', '3px solid #ffd400', 'important');
+        entry.style.setProperty('outline-offset', '4px', 'important');
+        entry.style.setProperty('border-radius', '6px', 'important');
+        var tip = document.createElement('div');
+        tip.textContent = '点这里登录';
+        tip.style.cssText = 'position:absolute;z-index:2147483647;background:#1b1b1b;color:#ffd400;' +
+          'font:600 13px/1.4 -apple-system,sans-serif;padding:5px 9px;border-radius:6px;' +
+          'pointer-events:none;white-space:nowrap;transform:translate(-50%,100%);';
+        var host = entry.closest('div') || entry.parentElement || entry;
+        host.style.setProperty('position', 'relative', 'important');
+        host.appendChild(tip);
+        tip.style.left = '50%';
+        tip.style.top = '100%';
+        window.__kwHinted = true;
+      }
+    }
+
+    // 站点的登录入口是「开关」：连续点会把弹窗又关掉。
+    // 这里最多每 2.5 秒点一次，等 hydration 完成后仍有机会补点。
+    var now = Date.now();
+    if (window.__kwClickedAt && now - window.__kwClickedAt < 2500) return;
+    window.__kwClickedAt = now;
+
+    function fire(el) {
+      if (!el) return;
+      try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+      ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'].forEach(function (t) {
+        try {
+          var Ev = t.indexOf('pointer') === 0 ? PointerEvent : MouseEvent;
+          el.dispatchEvent(new Ev(t, { bubbles: true, cancelable: true, view: window }));
+        } catch (e) {}
+      });
+      try { el.click(); } catch (e) {}
+    }
+
+    // 站点入口：每轮都试一次（首轮可能还在 hydration，点了不生效）
+    var sels = ['.reg_text', '.login_text', '.login-btn', 'a[href*="login"]'];
+    for (var k = 0; k < sels.length; k++) {
+      var el = document.querySelector(sels[k]);
+      if (el && el.offsetParent !== null) { fire(el); return; }
+    }
+
+    // 文本兜底
+    var nodes = document.querySelectorAll('span,a,button');
+    for (var j = 0; j < nodes.length && j < 4000; j++) {
+      var n = nodes[j];
+      if (n.children.length !== 0) continue;
+      var t = (n.textContent || '').replace(/\s+/g, '');
+      if (t === '登录' || t === '登录/注册') {
+        if (n.offsetParent !== null) { fire(n); return; }
+      }
+    }
   } catch (e) {}
 })();
 "#;
@@ -553,7 +951,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let url = tauri::Url::parse("https://www.kuwo.cn/").map_err(|e| e.to_string())?;
-    tauri::WebviewWindowBuilder::new(&app, LOGIN_LABEL, tauri::WebviewUrl::External(url))
+    let w = tauri::WebviewWindowBuilder::new(&app, LOGIN_LABEL, tauri::WebviewUrl::External(url))
         .title("酷我登录")
         // 普通窗口：保留标题栏和关闭按钮
         .always_on_top(true)
@@ -561,17 +959,20 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         // 先按桌面宽度创建（此时窗口是隐藏的，用户看不到），
         // 否则窄视口下站点会切移动布局，「登录/注册」入口根本不存在，弹窗点不出来
 
-        // 一开始就是弹窗尺寸；隐藏到登录框就绪再 show，避免白屏闪烁
+        // 直接显示：网页登录入口只认真实点击，合成事件点不开，
+        // 所以先把页面亮出来，用户点一次右上角「登录/注册」后我们再收成登录框
         .visible(false)
-        .inner_size(1000.0, 760.0)
+        .inner_size(1280.0, 800.0)
         .build()
         .map_err(|e| e.to_string())?;
 
+    place_centered(&w, 1280.0, 800.0);
+    let _ = w.show();
+    let _ = w.set_focus();
 
-    // 后台协程：把弹窗点出来，并在网页弹窗被关掉时把这个无边框窗口一起关掉
+    // 后台协程：把弹窗点出来，并在网页弹窗被关掉时把这个窗口一起关掉。
     let handle = app.clone();
     std::thread::spawn(move || {
-        let mut saw_open = false;
         let mut isolated = false;
         // 只有真的见过网页弹窗，"消失"才算用户关掉；
         // 否则兜底显示出来的窗口会在同一轮里被这条规则立刻关掉
@@ -584,7 +985,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                 // 连续取不到才认为窗口已经被关掉
                 misses += 1;
                 if misses > 5 {
-                    return;
+                        return;
                 }
                 continue;
             };
@@ -623,7 +1024,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                 place_centered(&w, LOGIN_W, LOGIN_H);
                 let _ = w.show();
                 let _ = w.set_focus();
-                saw_open = true;
+                let _ = w.set_title("酷我登录");
                 isolated = true;
                 ever_modal = true;
                 closed_streak = 0;
@@ -637,23 +1038,13 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
             if has_uid {
                 return; // 登录成功，交给前端读取 uid
             }
-            // 8 秒还没等到弹窗（站点改版等）：直接按原样显示，让用户自己点登录
-            if !saw_open && i >= 40 && !isolated {
-                let _ = w.set_resizable(true);
-                let _ = w.set_size(tauri::LogicalSize::new(LOGIN_W, LOGIN_H));
-                let _ = w.set_resizable(false);
-                place_centered(&w, LOGIN_W, LOGIN_H);
-                let _ = w.show();
-                let _ = w.set_focus();
-                saw_open = true;
-            }
 
             if ever_modal && !modal_open {
                 // 弹窗被关掉（点 X 或登录后自动收）——把窗口一起收起
                 closed_streak += 1;
                 if closed_streak >= 1 {
                     let _ = w.close();
-                    return;
+                        return;
                 }
             } else {
                 closed_streak = 0;
@@ -662,6 +1053,14 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// 登录窗口是否已经显示（前端用它结束按钮的「正在打开…」）
+#[tauri::command]
+fn login_visible(app: tauri::AppHandle) -> bool {
+    app.get_webview_window(LOGIN_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
 }
 
 /// 返回 `Ok(Some(uid))` 表示已经拿到；`Ok(None)` 表示还没登录或还没探测到。
@@ -776,6 +1175,7 @@ async fn download_batch(
             .insert_download(&task_id, track, info.quality, "", 0, "running")
             .map_err(|e| e.to_string())?;
 
+        let extras = build_extras(&state.http, p.as_ref(), track).await;
         let ch = on_progress.clone();
         let tid = task_id.clone();
         let res = state
@@ -785,6 +1185,7 @@ async fn download_batch(
                 &info,
                 &dir,
                 &fname,
+                &extras,
                 Box::new(move |d, _t| {
                     let _ = ch.send(Progress {
                         task_id: tid.clone(),
@@ -979,6 +1380,620 @@ fn open_download_dir(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- 网盘（S3）----------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct S3PlaylistInfo {
+    pub name: String,
+    pub count: u32,
+    /// 第一首歌的封面直链（决定卡片长什么样，可以为空）
+    #[serde(default)]
+    pub cover: Option<String>,
+}
+
+#[tauri::command]
+async fn s3_test(state: State<'_, AppState>) -> Result<String, String> {
+    let s3 = s3_client(&state)?;
+    s3.test().await.map_err(|e| e.to_string())
+}
+
+/// 本地记录的歌单 + 网盘上实际存在的曲目数
+#[tauri::command]
+async fn s3_playlists(state: State<'_, AppState>) -> Result<Vec<S3PlaylistInfo>, String> {
+    let names = state
+        .storage
+        .list_s3_playlists()
+        .map_err(|e| e.to_string())?;
+    let client = s3_client(&state).ok();
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let mut count = 0u32;
+        let mut cover = None;
+        if let Some(c) = client.as_ref() {
+            let prefix = playlist_prefix(&c.config().prefix, &name);
+            if let Ok(keys) = c.list_keys(&prefix).await {
+                count = keys.iter().filter(|k| is_audio_key(k)).count() as u32;
+                let lower: Vec<(String, String)> = keys
+                    .iter()
+                    .map(|k| (k.to_lowercase(), k.clone()))
+                    .collect();
+                if let Some(first) = keys.iter().find(|k| is_audio_key(k)) {
+                    let stem = first.rsplit_once('.').map(|(a, _)| a).unwrap_or(first.as_str());
+                    if let Some(img) = find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"]) {
+                        cover = c.presign_get(&img, 6 * 3600).ok();
+                    }
+                }
+            }
+        }
+        out.push(S3PlaylistInfo { name, count, cover });
+    }
+    Ok(out)
+}
+
+/// 网盘歌单里的一个音频文件（`track.id` 就是对象 key）
+#[derive(Debug, Clone, Serialize)]
+pub struct S3TrackRow {
+    pub key: String,
+    pub track: Track,
+}
+
+fn parse_track_filename(stem: &str) -> (String, String) {
+    let name = stem.rsplit('/').next().unwrap_or(stem).trim();
+    match name.split_once(" - ") {
+        Some((artist, title)) => (artist.trim().to_string(), title.trim().to_string()),
+        None => (String::new(), name.to_string()),
+    }
+}
+
+/// 在对象列表里找同名不同后缀的兄弟文件（歌词/封面）
+fn find_sibling(keys: &[(String, String)], stem: &str, exts: &[&str]) -> Option<String> {
+    for ext in exts {
+        let target = format!("{}.{}", stem, ext).to_lowercase();
+        if let Some((_, key)) = keys.iter().find(|(lower, _)| *lower == target) {
+            return Some(key.clone());
+        }
+    }
+    None
+}
+
+/// 列出某个网盘歌单里的歌曲（音频 + 同名歌词/封面）
+#[tauri::command]
+async fn s3_playlist_tracks(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Vec<S3TrackRow>, String> {
+    let client = s3_client(&state)?;
+    let folder = playlist_prefix(&client.normalized_prefix(), &name);
+    let keys = client
+        .list_keys(&folder)
+        .await
+        .map_err(|e| e.to_string())?;
+    let lower: Vec<(String, String)> = keys
+        .iter()
+        .map(|k| (k.to_lowercase(), k.clone()))
+        .collect();
+
+    let mut rows = Vec::new();
+    for key in keys.iter().filter(|k| is_audio_key(k)) {
+        let stem = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
+        let (artist, title) = parse_track_filename(stem);
+        let cover = find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"])
+            .and_then(|k| client.presign_get(&k, 6 * 3600).ok());
+
+        rows.push(S3TrackRow {
+            key: key.clone(),
+            track: Track {
+                provider: "s3".into(),
+                id: key.clone(),
+                title,
+                artist,
+                cover,
+                availability: Availability::Available,
+                ..Track::default()
+            },
+        });
+    }
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(rows)
+}
+
+/// 删除网盘歌单：连同云端文件一起删
+#[tauri::command]
+async fn s3_playlist_purge(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let name = sanitize_playlist_name(&name)?;
+    if name == FAVORITES_PLAYLIST {
+        return Err("「喜欢」由红心管理，不能在这里删除".into());
+    }
+    let client = s3_client(&state)?;
+    let folder = playlist_prefix(&client.normalized_prefix(), &name);
+    let keys = client
+        .list_keys(&folder)
+        .await
+        .map_err(|e| e.to_string())?;
+    for key in keys {
+        client
+            .delete_object(&key)
+            .await
+            .map_err(|e| format!("删除 {} 失败：{}", key, e))?;
+    }
+    state
+        .storage
+        .remove_s3_playlist(&name)
+        .map_err(|e| e.to_string())
+}
+
+/// 重命名歌单：按前缀把对象一个个搬到新目录
+#[tauri::command]
+async fn s3_playlist_rename(
+    state: State<'_, AppState>,
+    old: String,
+    new: String,
+) -> Result<String, String> {
+    let old = sanitize_playlist_name(&old)?;
+    let new = sanitize_playlist_name(&new)?;
+    if old == FAVORITES_PLAYLIST {
+        return Err("「喜欢」不能重命名".into());
+    }
+    if new == FAVORITES_PLAYLIST {
+        return Err("「喜欢」是保留名".into());
+    }
+    if old == new {
+        return Ok(new);
+    }
+    let existing = state
+        .storage
+        .list_s3_playlists()
+        .map_err(|e| e.to_string())?;
+    if existing.iter().any(|p| p == &new) {
+        return Err(format!("已经有叫「{}」的歌单了", new));
+    }
+
+    let client = s3_client(&state)?;
+    let prefix = client.normalized_prefix();
+    let old_folder = playlist_prefix(&prefix, &old);
+    let new_folder = playlist_prefix(&prefix, &new);
+    let keys = client
+        .list_keys(&old_folder)
+        .await
+        .map_err(|e| e.to_string())?;
+    for key in keys {
+        let suffix = key.strip_prefix(&old_folder).unwrap_or(&key);
+        client
+            .move_object(&key, &format!("{}{}", new_folder, suffix))
+            .await
+            .map_err(|e| format!("移动 {} 失败：{}", key, e))?;
+    }
+
+    state
+        .storage
+        .remove_s3_playlist(&old)
+        .map_err(|e| e.to_string())?;
+    state
+        .storage
+        .save_s3_playlist(&new)
+        .map_err(|e| e.to_string())?;
+    Ok(new)
+}
+
+/// 删除歌单里的单曲（音频 + 同名歌词/封面）
+#[tauri::command]
+async fn s3_track_delete(state: State<'_, AppState>, key: String) -> Result<(), String> {
+    let client = s3_client(&state)?;
+    client
+        .delete_object(&key)
+        .await
+        .map_err(|e| e.to_string())?;
+    let stem = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
+    for ext in ["lrc", "jpg", "jpeg", "png", "webp"] {
+        let _ = client
+            .delete_object(&format!("{}.{}", stem, ext))
+            .await;
+    }
+    Ok(())
+}
+
+/// 按拖拽后的顺序保存歌单排序
+#[tauri::command]
+fn s3_playlists_reorder(state: State<'_, AppState>, names: Vec<String>) -> Result<(), String> {
+    state
+        .storage
+        .reorder_s3_playlists(&names)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn s3_playlist_create(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let name = sanitize_playlist_name(&name)?;
+    state
+        .storage
+        .save_s3_playlist(&name)
+        .map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
+
+
+/// 下载一首到临时目录，再上传音频 + 歌词 + 封面，最后清掉临时文件
+async fn upload_track_to_s3(
+    state: &AppState,
+    s3: &S3,
+    track: &Track,
+    info: &StreamInfo,
+    playlist: &str,
+    task_id: &str,
+    on_progress: Option<&Channel<Progress>>,
+) -> Result<String, String> {
+    let ext = ext_for(&info.content_type);
+    let key = object_key(&s3.config().prefix, playlist, track, ext);
+    let temp = state.config_dir.join("s3tmp").join(task_id);
+    let fname = build_filename(track, ext);
+
+    let provider = state.provider(&track.provider)?;
+    let extras = build_extras(&state.http, provider.as_ref(), track).await;
+
+    let ch = on_progress.cloned();
+    let tid = task_id.to_string();
+    let path = state
+        .downloader
+        .run(
+            track,
+            info,
+            &temp,
+            &fname,
+            &extras,
+            Box::new(move |d, t| {
+                if let Some(ch) = &ch {
+                    let _ = ch.send(Progress {
+                        task_id: tid.clone(),
+                        downloaded: d,
+                        total: t,
+                    });
+                }
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    let size = bytes.len() as i64;
+    s3.put_object(&key, bytes, audio_content_type(&key))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(lrc) = &extras.lyrics_lrc {
+        let lrc_key = replace_ext(&key, "lrc");
+        s3.put_object(
+            &lrc_key,
+            lrc.clone().into_bytes(),
+            "text/plain; charset=utf-8",
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(cover) = &extras.cover {
+        let cover_key = replace_ext(&key, "jpg");
+        let mime = if extras.cover_mime.trim().is_empty() {
+            "image/jpeg"
+        } else {
+            extras.cover_mime.as_str()
+        };
+        s3.put_object(&cover_key, cover.clone(), mime)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let path_str = format!("s3://{}/{}", s3.config().bucket.trim(), key);
+    state
+        .storage
+        .insert_download(task_id, track, info.quality, &path_str, size, "done")
+        .map_err(|e| e.to_string())?;
+
+    let _ = tokio::fs::remove_dir_all(&temp).await;
+    Ok(key)
+}
+
+#[tauri::command]
+async fn s3_download(
+    state: State<'_, AppState>,
+    track: Track,
+    quality: Option<String>,
+    playlist: Option<String>,
+    on_progress: Channel<Progress>,
+) -> Result<String, String> {
+    let settings = state.settings_snapshot();
+    let q = Quality::from_str(quality.as_deref().unwrap_or(&settings.default_quality));
+    let s3 = s3_client(&state)?;
+
+    let raw_playlist = playlist.unwrap_or_default();
+    let playlist = if raw_playlist.trim().is_empty() {
+        String::new()
+    } else {
+        sanitize_playlist_name(&raw_playlist)?
+    };
+
+    let p = state.provider(&track.provider)?;
+    let info = p.resolve(&track.id, q).await.map_err(|e| e.to_string())?;
+
+    let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+    let task_id = format!("s3-{}-{}", seq, track.id);
+    state
+        .storage
+        .insert_download(&task_id, &track, info.quality, "", 0, "running")
+        .map_err(|e| e.to_string())?;
+
+    match upload_track_to_s3(
+        &state,
+        &s3,
+        &track,
+        &info,
+        &playlist,
+        &task_id,
+        Some(&on_progress),
+    )
+    .await
+    {
+        Ok(key) => {
+            if !playlist.is_empty() {
+                let _ = state.storage.save_s3_playlist(&playlist);
+            }
+            Ok(key)
+        }
+        Err(e) => {
+            let _ = state
+                .storage
+                .update_download(&task_id, &format!("failed: {}", e), 0);
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn s3_download_batch(
+    state: State<'_, AppState>,
+    tracks: Vec<Track>,
+    quality: Option<String>,
+    playlist: Option<String>,
+    on_progress: Channel<Progress>,
+) -> Result<Vec<String>, String> {
+    if tracks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let settings = state.settings_snapshot();
+    let q = Quality::from_str(quality.as_deref().unwrap_or(&settings.default_quality));
+    let s3 = s3_client(&state)?;
+
+    let raw_playlist = playlist.unwrap_or_default();
+    let playlist = if raw_playlist.trim().is_empty() {
+        String::new()
+    } else {
+        sanitize_playlist_name(&raw_playlist)?
+    };
+
+    let total = tracks.len();
+    let mut keys = Vec::new();
+    let mut failed = 0usize;
+
+    for (i, track) in tracks.iter().enumerate() {
+        let _ = on_progress.send(Progress {
+            task_id: format!("batch-{}-{}", i, track.id),
+            downloaded: i as u64,
+            total: Some(total as u64),
+        });
+
+        let p = state.provider(&track.provider)?;
+        let info = match p.resolve(&track.id, q).await {
+            Ok(v) => v,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+
+        let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+        let task_id = format!("s3b-{}-{}", seq, track.id);
+        if let Err(e) = state
+            .storage
+            .insert_download(&task_id, track, info.quality, "", 0, "running")
+        {
+            return Err(e.to_string());
+        }
+
+        match upload_track_to_s3(&state, &s3, track, &info, &playlist, &task_id, None).await {
+            Ok(k) => keys.push(k),
+            Err(e) => {
+                failed += 1;
+                let _ = state
+                    .storage
+                    .update_download(&task_id, &format!("failed: {}", e), 0);
+            }
+        }
+    }
+
+    let _ = on_progress.send(Progress {
+        task_id: "batch-done".into(),
+        downloaded: keys.len() as u64,
+        total: Some(total as u64),
+    });
+
+    if !playlist.is_empty() {
+        let _ = state.storage.save_s3_playlist(&playlist);
+    }
+    if keys.is_empty() && failed > 0 {
+        return Err(format!(
+            "{} 首全部失败（可能都不可用，或网盘配置有问题）",
+            failed
+        ));
+    }
+    Ok(keys)
+}
+
+// ---------- 歌单一键导入网盘 ----------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct S3ImportResult {
+    pub playlist: String,
+    pub total: u32,
+    pub uploaded: u32,
+    pub failed: u32,
+}
+
+/// 把一个平台歌单整张导入网盘：逐首取流 → 下载（含封面/歌词）→ 上传。
+///
+/// 目标歌单（桶内目录）默认沿用平台歌单名，也可以在导入弹窗里改。
+#[tauri::command]
+async fn s3_import_playlist(
+    state: State<'_, AppState>,
+    provider: String,
+    playlist_id: String,
+    name: String,
+    target: Option<String>,
+    on_progress: Channel<Progress>,
+) -> Result<S3ImportResult, String> {
+    let p = state.provider(&provider)?;
+    let s3 = s3_client(&state)?;
+
+    let detail = p
+        .playlist(&playlist_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let tracks = detail.tracks;
+    let total = tracks.len();
+    if total == 0 {
+        return Err("这个歌单里没有曲目".into());
+    }
+
+    let target_name = match target {
+        Some(t) if !t.trim().is_empty() => sanitize_playlist_name(&t)?,
+        _ => sanitize_playlist_name(&name).unwrap_or_else(|_| "未命名歌单".to_string()),
+    };
+
+    let settings = state.settings_snapshot();
+    let q = Quality::from_str(&settings.default_quality);
+
+    let mut uploaded = 0u32;
+    let mut failed = 0u32;
+
+    for (i, track) in tracks.iter().enumerate() {
+        let _ = on_progress.send(Progress {
+            task_id: format!("batch-{}-{}", i, track.id),
+            downloaded: i as u64,
+            total: Some(total as u64),
+        });
+
+        let info = match p.resolve(&track.id, q).await {
+            Ok(v) => v,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+
+        let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+        let task_id = format!("imp-{}-{}", seq, track.id);
+        if let Err(e) = state
+            .storage
+            .insert_download(&task_id, track, info.quality, "", 0, "running")
+        {
+            return Err(e.to_string());
+        }
+
+        match upload_track_to_s3(&state, &s3, track, &info, &target_name, &task_id, None).await {
+            Ok(_) => uploaded += 1,
+            Err(e) => {
+                failed += 1;
+                let _ = state
+                    .storage
+                    .update_download(&task_id, &format!("failed: {}", e), 0);
+            }
+        }
+    }
+
+    let _ = on_progress.send(Progress {
+        task_id: "batch-done".into(),
+        downloaded: uploaded as u64,
+        total: Some(total as u64),
+    });
+
+    if uploaded == 0 {
+        return Err(format!(
+            "{} 首全部失败（可能都不可用，或网盘配置有问题）",
+            failed
+        ));
+    }
+
+    let _ = state.storage.save_s3_playlist(&target_name);
+    Ok(S3ImportResult {
+        playlist: target_name,
+        total: total as u32,
+        uploaded,
+        failed,
+    })
+}
+
+// ---------- 托盘 ----------
+
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "播放 / 暂停", true, None::<&str>)?;
+    let prev_i = MenuItem::with_id(app, "prev", "上一首", true, None::<&str>)?;
+    let next_i = MenuItem::with_id(app, "next", "下一首", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出 TinyMusic", true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+
+    let menu = Menu::with_items(
+        app,
+        &[&show, &sep1, &toggle, &prev_i, &next_i, &sep2, &quit],
+    )?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .tooltip("TinyMusic")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main(app),
+            "toggle" => {
+                let _ = app.emit("tray://action", "toggle");
+            }
+            "prev" => {
+                let _ = app.emit("tray://action", "prev");
+            }
+            "next" => {
+                let _ = app.emit("tray://action", "next");
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        });
+
+    // 优先用打包内的 32x32 图标：dev 模式下 default_window_icon 有时是空的，
+    // 那样 macOS 菜单栏会看不到托盘入口。
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+        .ok()
+        .or_else(|| app.default_window_icon().cloned());
+    if let Some(icon) = icon {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+/// 前端主动把窗口收进托盘（设置页/快捷键都能用）
+#[tauri::command]
+fn hide_to_tray(app: tauri::AppHandle) -> Result<(), String> {
+    let w = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())?;
+    w.hide().map_err(|e| e.to_string())
+}
+
 // ---------- 启动 ----------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -990,6 +2005,9 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("tinymusic"));
             let _ = std::fs::create_dir_all(&config_dir);
+
+            // 清掉上次异常退出留下的网盘临时文件
+            let _ = std::fs::remove_dir_all(config_dir.join("s3tmp"));
 
             let http = Arc::new(HttpClient::new(700, 3));
             let proxy = tauri::async_runtime::block_on(StreamProxy::start(http.clone()))
@@ -1014,10 +2032,34 @@ pub fn run() {
                 config_dir,
                 task_seq: AtomicU64::new(1),
             });
+
+            // 托盘图标 + 右键菜单：关窗口后还能控制播放
+            build_tray(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_window_event(|window, event| {
+            // 只有主窗口「关闭」才收进托盘；登录窗口该关就关
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<AppState>();
+                if state.settings_snapshot().close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                } else {
+                    // 关掉「最小化到托盘」时，关闭窗口就是退出，
+                    // 否则 macOS 会留下一个没有窗口也没有托盘的进程。
+                    let app = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(120));
+                        app.exit(0);
+                    });
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_providers,
             search,
@@ -1032,12 +2074,14 @@ pub fn run() {
             favorite_remove,
             favorite_list,
             favorite_check,
+            favorites_pull,
             settings_get,
             settings_set,
             open_download_dir,
             search_playlists,
             user_playlists,
             login_open,
+            login_visible,
             login_probe,
             login_close,
             favorites,
@@ -1053,7 +2097,26 @@ pub fn run() {
             logout,
             session_get,
             my_playlists,
+            s3_test,
+            s3_playlists,
+            s3_playlist_create,
+            s3_playlists_reorder,
+            s3_playlist_purge,
+            s3_playlist_rename,
+            s3_playlist_tracks,
+            s3_track_delete,
+            s3_download,
+            s3_download_batch,
+            s3_import_playlist,
+            hide_to_tray,
         ])
-        .run(tauri::generate_context!())
-        .expect("Tauri 启动失败");
+        .build(tauri::generate_context!())
+        .expect("Tauri 启动失败")
+        .run(|_app, _event| {
+            // macOS：点 Dock 图标把隐藏的窗口叫回来
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                show_main(_app);
+            }
+        });
 }

@@ -11,6 +11,7 @@ pub mod id3;
 pub mod kwjson;
 pub mod model;
 pub mod proxy;
+pub mod s3;
 pub mod providers;
 pub mod storage;
 pub mod text;

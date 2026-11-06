@@ -1,11 +1,24 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
+  import { listen } from '@tauri-apps/api/event';
   import { icons, ICON_SIZE } from './lib/icons';
   import { router, go } from './lib/router.svelte';
   import { api } from './lib/api';
-  import { player, bindAudio, restoreVolume, onEnded } from './lib/player.svelte';
+  import {
+    player,
+    bindAudio,
+    restoreVolume,
+    onEnded,
+    toggle,
+    next,
+    prev,
+    syncPlayback,
+  } from './lib/player.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
+  import DownloadDialog from './components/DownloadDialog.svelte';
+  import ContextMenu from './components/ContextMenu.svelte';
+  import Toast from './components/Toast.svelte';
   import Search from './routes/Search.svelte';
   import Playlist from './routes/Playlist.svelte';
   import Account from './routes/Account.svelte';
@@ -15,51 +28,85 @@
   import Downloads from './routes/Downloads.svelte';
   import Library from './routes/Library.svelte';
   import Settings from './routes/Settings.svelte';
+  import Cloud from './routes/Cloud.svelte';
+  import Lyrics from './routes/Lyrics.svelte';
+  import { appCfg, refreshAppCfg } from './lib/config.svelte';
 
   let audio = $state<HTMLAudioElement | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
 
-  // 路由变化时把主区域滚回顶部
+  // 路由变化时把主区域滚回顶部。
+  // 搜索页例外：它自己保存/恢复滚动位置，不能在这里重置。
   $effect(() => {
-    void router.route;
+    const name = router.route.name;
+    if (name === 'search') return;
     mainEl?.scrollTo({ top: 0 });
   });
+
   let bootErr = $state('');
 
   onMount(() => {
     restoreVolume();
-    api
-      .providerFeatures('kuwo')
-      .then((f) => (features = f))
-      .catch(() => (features = { favorites: false }));
     // 让播放/下载用的是后端保存的音质设置
-    import('./lib/api').then(({ api }) =>
-      api
+    import('./lib/api').then(({ api: a }) =>
+      a
         .settingsGet()
-        .then((s) => localStorage.setItem('quality', s.default_quality))
+        .then((s) => {
+          const q = s.default_quality === 'lossless' ? 'super' : s.default_quality;
+          localStorage.setItem('quality', q);
+          // 网盘启用时把云端的「喜欢」拉回来合并
+          if (s.s3_enabled && s.s3_bucket) a.favoritesPull().catch(() => {});
+        })
         .catch(() => {})
     );
+    refreshAppCfg().then((s) => {
+      if (s?.s3_enabled && s.s3_bucket) api.favoritesPull().catch(() => {});
+    });
     bindAudio((action, value) => {
-      const a = audio;
-      if (!a) return;
+      const el = audio;
+      if (!el) return;
       switch (action) {
         case 'load':
-          a.src = player.src;
-          a.load();
+          el.src = player.src;
+          el.load();
           break;
         case 'play':
-          a.play().catch((e) => {
+          el.play().catch((e) => {
             player.error = '播放失败：' + String(e);
+            player.status = 'error';
+            player.playing = false;
           });
           break;
         case 'pause':
-          a.pause();
+          el.pause();
           break;
         case 'seek':
-          a.currentTime = value ?? 0;
+          el.currentTime = value ?? 0;
           break;
       }
     });
+
+    // 托盘菜单 → 前端动作
+    let unlisten: (() => void) | undefined;
+    listen<string>('tray://action', (e) => {
+      switch (e.payload) {
+        case 'toggle':
+          toggle();
+          break;
+        case 'next':
+          next();
+          break;
+        case 'prev':
+          prev();
+          break;
+      }
+    })
+      .then((fn) => (unlisten = fn))
+      .catch(() => {
+        /* 非 Tauri 环境（纯浏览器调试）忽略 */
+      });
+
+    return () => unlisten?.();
   });
 
   // 音量同步
@@ -67,18 +114,17 @@
     if (audio) audio.volume = player.volume;
   });
 
-  // 「喜欢」只在平台提供账号级喜欢集合时才出现
-  let features = $state<{ favorites: boolean }>({ favorites: false });
-
+  // 「喜欢」存到网盘，只有网盘启用时才出现
   const nav = $derived([
     { name: 'search', label: '搜索', icon: icons.search },
-    ...(features.favorites ? [{ name: 'library', label: '喜欢', icon: icons.favorite }] : []),
-    { name: 'downloads', label: '下载', icon: icons.download },
+    ...(appCfg.s3Enabled ? [{ name: 'library', label: '喜欢', icon: icons.favorite }] : []),
+    { name: 'downloads', label: '下载', icon: icons.downloadDir },
+    { name: 'cloud', label: '网盘', icon: icons.cloud },
     { name: 'settings', label: '设置', icon: icons.settings },
   ]);
 
   const activeNav = $derived(
-    ['track', 'artist', 'album'].includes(router.route.name) ? 'search' : router.route.name
+    ['track', 'artist', 'album', 'lyrics'].includes(router.route.name) ? 'search' : router.route.name
   );
 </script>
 
@@ -89,7 +135,10 @@
       <span>TinyMusic</span>
     </div>
     <nav>
-      {#each nav as n}
+      <!-- 必须按 name 做 key：features 异步加载后导航项会插队，
+           不 key 的话 Svelte 会复用按钮，HugeiconsIcon 的 icon 属性不跟随更新，
+           结果「喜欢」显示成下载图标、「下载」和「设置」都显示齿轮。 -->
+      {#each nav as n (n.name)}
         <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
         </button>
@@ -121,12 +170,22 @@
       <Library />
     {:else if router.route.name === 'settings'}
       <Settings />
+    {:else if router.route.name === 'cloud'}
+      <Cloud />
     {/if}
   </main>
 
   <footer>
     <PlayerBar />
   </footer>
+
+  {#if player.lyricsOpen && player.current}
+    <Lyrics />
+  {/if}
+
+  <DownloadDialog />
+  <ContextMenu />
+  <Toast />
 
   <!-- 隐藏的音频元素：真正的解码/播放器 -->
   <audio
@@ -142,9 +201,10 @@
     onended={() => onEnded()}
     onerror={() => {
       if (player.src) player.error = '音频加载失败（直链可能已过期）';
+      player.status = 'error';
       player.playing = false;
     }}
-    onplay={() => (player.playing = true)}
-    onpause={() => (player.playing = false)}
+    onplay={() => syncPlayback('playing')}
+    onpause={() => syncPlayback('paused')}
   ></audio>
 </div>

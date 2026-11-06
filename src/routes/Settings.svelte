@@ -1,9 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type Settings, type Quality } from '../lib/api';
+  import { icons, ICON_SIZE } from '../lib/icons';
+  import { refreshAppCfg } from '../lib/config.svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import { check, type Update } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
 
+  // ---- 更新 ----
   let appVersion = $state('');
   let updMsg = $state('');
   let updErr = $state('');
@@ -61,32 +66,83 @@
     }
   }
 
-  let s = $state<Settings>({ download_dir: '', default_quality: 'high', concurrency: 2 });
-  let saved = $state('');
+  // ---- 设置（改动即保存） ----
+  let s = $state<Settings>({
+    download_dir: '',
+    default_quality: 'high',
+    concurrency: 2,
+    s3_enabled: false,
+    s3_endpoint: '',
+    s3_region: 'us-east-1',
+    s3_bucket: '',
+    s3_access_key: '',
+    s3_secret_key: '',
+    s3_prefix: 'TinyMusic',
+    s3_path_style: false,
+    close_to_tray: true,
+  });
+  let loaded = $state(false);
   let err = $state('');
+  let savedHint = $state(false);
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  $effect(() => {
-    api
-      .settingsGet()
-      .then((v) => (s = v))
-      .catch((e) => (err = String(e)));
+  onMount(async () => {
+    try {
+      const v = await api.settingsGet();
+      // 旧配置里可能还留着已被移除的 lossless，直接替用户改成超高并存回去
+      const hadLossless = v.default_quality === 'lossless';
+      if (hadLossless) v.default_quality = 'super';
+      s = v;
+      loaded = true;
+      localStorage.setItem('quality', v.default_quality);
+      if (hadLossless) void saveNow();
+    } catch (e) {
+      err = String(e);
+      loaded = true;
+    }
   });
 
-  async function save() {
+  async function saveNow() {
+    if (!loaded) return;
     try {
       await api.settingsSet($state.snapshot(s) as Settings);
       localStorage.setItem('quality', s.default_quality);
-      saved = '已保存';
-      setTimeout(() => (saved = ''), 2000);
+      await refreshAppCfg();
+      savedHint = true;
+      setTimeout(() => (savedHint = false), 1500);
     } catch (e) {
       err = String(e);
     }
   }
 
-  const qualities: { v: Quality; label: string; note: string }[] = [
-    { v: 'high', label: '标准 128k', note: '未登录唯一稳定可用的档位' },
-    { v: 'super', label: '高品质 320k', note: '多数曲目会被服务端降级/拒绝' },
-    { v: 'lossless', label: '无损', note: '基本不可用，仅备用' },
+  /** 文本输入用 400ms 防抖，避免每敲一个字都写盘 */
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveNow(), 400);
+  }
+
+  // S3 测试
+  let s3Msg = $state('');
+  let s3Err = $state('');
+  let s3Busy = $state(false);
+
+  async function testS3() {
+    s3Busy = true;
+    s3Msg = '';
+    s3Err = '';
+    try {
+      await saveNow();
+      s3Msg = await api.s3Test();
+    } catch (e) {
+      s3Err = String(e);
+    } finally {
+      s3Busy = false;
+    }
+  }
+
+  const qualities: { v: Quality; label: string }[] = [
+    { v: 'high', label: '标准 128k' },
+    { v: 'super', label: '高品质 320k' },
   ];
 </script>
 
@@ -95,7 +151,12 @@
 
   <div class="field">
     <div class="lbl">下载目录</div>
-    <input bind:value={s.download_dir} spellcheck="false" />
+    <input
+      bind:value={s.download_dir}
+      oninput={scheduleSave}
+      spellcheck="false"
+      placeholder="~/Music/TinyMusic"
+    />
   </div>
 
   <div class="field">
@@ -103,9 +164,14 @@
     <div class="radios">
       {#each qualities as q}
         <label class="radio">
-          <input type="radio" name="q" value={q.v} bind:group={s.default_quality} />
+          <input
+            type="radio"
+            name="q"
+            value={q.v}
+            bind:group={s.default_quality}
+            onchange={saveNow}
+          />
           <span>{q.label}</span>
-          <em>{q.note}</em>
         </label>
       {/each}
     </div>
@@ -113,13 +179,79 @@
 
   <div class="field">
     <div class="lbl">并发下载数</div>
-    <input type="number" min="1" max="6" bind:value={s.concurrency} />
+    <input type="number" min="1" max="6" bind:value={s.concurrency} onchange={saveNow} />
+  </div>
+
+  <div class="field">
+    <div class="lbl">窗口</div>
+    <label class="check">
+      <input type="checkbox" bind:checked={s.close_to_tray} onchange={saveNow} />
+      <span>关闭窗口时收进托盘并继续播放</span>
+    </label>
+  </div>
+
+  <h2 class="sub-h">网盘（S3 兼容）</h2>
+
+  <div class="field">
+    <label class="check">
+      <input type="checkbox" bind:checked={s.s3_enabled} onchange={saveNow} />
+      <span>启用网盘</span>
+    </label>
+  </div>
+
+  <div class="s3grid" class:off={!s.s3_enabled}>
+    <div class="field">
+      <div class="lbl">Endpoint</div>
+      <input
+        bind:value={s.s3_endpoint}
+        oninput={scheduleSave}
+        placeholder="https://s3.us-east-1.amazonaws.com"
+        spellcheck="false"
+      />
+    </div>
+    <div class="field">
+      <div class="lbl">Region</div>
+      <input bind:value={s.s3_region} oninput={scheduleSave} placeholder="us-east-1" spellcheck="false" />
+    </div>
+    <div class="field">
+      <div class="lbl">Bucket</div>
+      <input bind:value={s.s3_bucket} oninput={scheduleSave} placeholder="my-music" spellcheck="false" />
+    </div>
+    <div class="field">
+      <div class="lbl">前缀目录</div>
+      <input bind:value={s.s3_prefix} oninput={scheduleSave} placeholder="TinyMusic" spellcheck="false" />
+    </div>
+    <div class="field">
+      <div class="lbl">Access Key</div>
+      <input bind:value={s.s3_access_key} oninput={scheduleSave} spellcheck="false" autocomplete="off" />
+    </div>
+    <div class="field">
+      <div class="lbl">Secret Key</div>
+      <input
+        type="password"
+        bind:value={s.s3_secret_key}
+        oninput={scheduleSave}
+        autocomplete="off"
+      />
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="check">
+      <input type="checkbox" bind:checked={s.s3_path_style} onchange={saveNow} />
+      <span>使用 Path-Style 寻址</span>
+    </label>
   </div>
 
   <div class="actions">
-    <button class="primary" onclick={save}>保存</button>
-    {#if saved}<span class="ok">{saved}</span>{/if}
-    {#if err}<span class="err">{err}</span>{/if}
+    <button class="mini btn-ico" onclick={testS3} disabled={s3Busy || !s.s3_enabled}>
+      <HugeiconsIcon icon={icons.cloud} size={ICON_SIZE.inline} />
+      {s3Busy ? '连接中…' : '测试连接'}
+    </button>
+    {#if savedHint}<span class="hint">已保存</span>{/if}
+    {#if s3Msg}<span class="ok small">{s3Msg}</span>{/if}
+    {#if s3Err}<span class="err small">{s3Err}</span>{/if}
+    {#if err}<span class="err small">{err}</span>{/if}
   </div>
 
   <div class="field">
@@ -138,13 +270,5 @@
       <div class="updbar"><span style="width:{progress}%"></span></div>
     {/if}
     {#if updErr}<div class="err small">{updErr}</div>{/if}
-  </div>
-
-  <div class="note">
-    <strong>关于可用性</strong>
-    <p>
-      本客户端不实现登录，也不做签名请求。酷我对未授权请求只下发约 11 秒的占位片段，
-      因此会员专享曲目会显示「不可用」而不是卡住——这是设计上的诚实呈现，不是故障。
-    </p>
   </div>
 </div>

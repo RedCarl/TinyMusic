@@ -1,10 +1,11 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, fmtCount, type PlaylistDetail } from '../lib/api';
+  import { api, coverUrl, fmtCount, type PlaylistDetail } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { router } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
+  import { openTracksMenu } from '../lib/trackMenu.svelte';
 
   let route = $derived(router.route.name === 'playlist' ? router.route : null);
   let data = $state<PlaylistDetail | null>(null);
@@ -59,9 +60,9 @@
       本客户端目前只支持公开歌单。
     </div>
   {:else if data}
-    <div class="head">
+    <div class="head" role="group" oncontextmenu={(e) => openTracksMenu(e, data!.tracks)}>
       {#if data.playlist.cover}
-        <img class="cover" src={data.playlist.cover} alt="" />
+        <img class="cover" src={coverUrl(data.playlist.cover, 500)} alt="" />
       {:else}
         <div class="cover ph" aria-hidden="true">
           <HugeiconsIcon icon={icons.playlist} size={ICON_SIZE.empty} />

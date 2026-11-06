@@ -1,32 +1,19 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, type Track } from '../lib/api';
+  import type { Track } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
-  import { playTrack, player } from '../lib/player.svelte';
+  import { playTrack } from '../lib/player.svelte';
+  import { requestDownload, downloadUi } from '../lib/download.svelte';
 
   let { tracks, label = '' }: { tracks: Track[]; label?: string } = $props();
 
-  let busy = $state(false);
-  let msg = $state('');
+  const busy = $derived(downloadUi.busy);
+  const msg = $derived(
+    downloadUi.busy ? downloadUi.progress : downloadUi.doneMsg || downloadUi.err || ''
+  );
 
-  async function downloadAll() {
-    if (busy || tracks.length === 0) return;
-    busy = true;
-    msg = '准备中…';
-    try {
-      const ids = await api.downloadBatch(tracks, player.quality, (p) => {
-        if (p.total && p.task_id.startsWith('batch-') && !p.task_id.startsWith('batch-done')) {
-          msg = `第 ${p.downloaded + 1} / ${p.total} 首`;
-        }
-      });
-      msg = `已下载 ${ids.length} 首`;
-    } catch (e) {
-      msg = '批量下载失败';
-      player.error = String(e);
-    } finally {
-      busy = false;
-      setTimeout(() => (msg = ''), 4000);
-    }
+  function downloadAll() {
+    void requestDownload(tracks);
   }
 </script>
 
@@ -40,7 +27,7 @@
     播放全部
   </button>
   <button disabled={busy || tracks.length === 0} onclick={downloadAll}>
-    <HugeiconsIcon icon={icons.download} size={ICON_SIZE.inline} />
+    <HugeiconsIcon icon={busy ? icons.loading : icons.download} size={ICON_SIZE.inline} />
     {busy ? '下载中…' : `下载全部${label ? ' · ' + label : ''}`}
   </button>
   {#if msg}<span class="muted small">{msg}</span>{/if}

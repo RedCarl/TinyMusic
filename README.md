@@ -51,6 +51,14 @@ cargo test -p tinymusic-core
 cargo test -p tinymusic-core --test live -- --ignored --nocapture
 ```
 
+跑网盘（S3）集成测试（用你自己的桶，不留密钥在仓库里）：
+
+```bash
+S3_EP=https://your-s3.example.com S3_BUCKET=your-bucket \
+S3_AK=... S3_SK=... \
+cargo test -p tinymusic-core --test s3_live -- --ignored --nocapture
+```
+
 ---
 
 ## 逆向结论：这个客户端的边界在哪
@@ -115,14 +123,153 @@ player_open(provider, id, quality)               // → 本地代理 URL
 download_start(track, quality, channel)          // 下载（进度走 Channel）
 download_list()                                  // 下载记录
 favorite_add/remove/list/check                   // 收藏
-settings_get/set(settings)                       // 设置
+settings_get/set(settings)                       // 设置（含网盘与托盘开关）
 open_download_dir()                              // 打开下载目录
+s3_test()                                        // 网盘连通性
+s3_playlists / s3_playlist_create/delete         // 网盘歌单
+s3_download / s3_download_batch                  // 下载并上传到网盘
+hide_to_tray()                                   // 收进托盘
 ```
 
 艺人页与专辑页**不需要额外端点**：用搜索结果按 `ARTISTID` / `ALBUMID` 归组。
 实测搜「周杰伦」返回 50 条中 50 条 `ARTISTID=336`，归出 18 张专辑。
 
 ---
+
+## 播放器：状态、播放列表与播放顺序
+
+播放按钮不再是「一个图标切两种颜色」，而是按真实状态走：
+
+| 状态 | 按钮表现 | 无障碍标签 |
+|---|---|---|
+| `loading` | 旋转的加载图标 | 加载中 |
+| `playing` | 暂停图标 | 暂停 |
+| `paused` | 播放图标 | 继续播放 |
+| `ended` / `error` | 播放图标 | 重新播放 / 重试 |
+
+状态由 `<audio>` 的 `play` / `pause` / `ended` 事件回写（`syncPlayback`），
+不在 UI 里硬写，所以系统暂停、播放失败、切歌都能正确反映。
+
+**播放列表**：播放器右侧只有一个列表入口（带曲目数徽标），点开就是当前队列，
+支持点任意一首跳播、从列表移除、清空；四种播放顺序：
+
+- 顺序播放：播到最后一首停止
+- 列表循环：播完回到第一首
+- 单曲循环：`ended` 时原地重开
+- 随机播放：随机挑下一首（避免连续重复；上一首也是随机）
+
+模式持久化在 `localStorage.play_mode`。
+
+**音量**：播放器右侧只留一个小喇叭按钮，点开才是音量浮层（滑块 + 百分比 + 静音），
+不再常驻一条进度条，把横向空间让给曲名和进度；点空白处关闭。
+再点一次喇叭（或点浮层里的喇叭）可静音/恢复。
+
+**封面**：列表缩略图用 120px，详情页、歌词页、专辑页会通过 `coverUrl(url, size)`
+把酷我 URL 里的尺寸段换成 500/800，拿同一张图的高清版，不再糊。
+
+## 右键菜单
+
+歌曲、专辑、歌单、下载记录、歌词……凡是「有操作可做」的地方都支持右键，
+菜单由 `<ContextMenu />` 统一渲染（自动避开窗口边缘，Esc / 点空白 / 滚动即关闭），
+轻反馈走右下角的 toast，不再弹 alert。
+
+| 位置 | 菜单项 |
+|---|---|
+| 歌曲行 | 播放 / 下一首播放 / 添加到播放列表（已在列表时置灰）/ 下载（含歌词与封面）/ 喜欢或取消喜欢 / 查看详情 / 打开歌手 / 打开专辑 |
+| 播放列表行 | 同上 + 从播放列表移除 |
+| 搜索结果历史 | 搜索「关键词」/ 删除这条记录 / 清空搜索历史 |
+| 专辑卡片（搜索、艺人页） | 打开专辑 / 播放全部 / 下载全部 |
+| 专辑页、歌单页头部 | 播放全部 / 下载全部 |
+| 下载记录行 | 打开下载目录（仅本地）/ 复制文件路径 / 重新下载 |
+| 账号歌单行 | 打开歌单 / 一键导入到网盘 / 复制歌单 ID |
+| 播放器左侧封面区 | 查看歌词 / 暂停·继续 / 下载当前曲目 / 下一首 |
+| 歌词行 | 从这一句开始播放 / 复制这句歌词 |
+
+「喜欢」状态会先读本地库再决定菜单文案（喜欢 / 取消喜欢），改完立即同步行内红心。
+
+## 搜索页：状态缓存与历史查询
+
+搜索结果放在模块级 `$state`（`src/lib/searchStore.svelte.ts`）：
+切到别的页面再点回「搜索」，关键词、结果、页码、艺人专辑区、滚动位置全部原样恢复，
+不会重新发请求。
+
+搜索历史存在 `localStorage.search_history`（最多 20 条，最近在前），
+搜索栏下方以 chip 展示，可单条删除或清空。
+
+## 艺人页
+
+歌手页除曲目/专辑外，还会拉取 PC 歌手页里的资料：
+
+- 头像（`pic300` → 通过 `coverUrl` 升到 500px，失败时退回歌手写真接口）
+- 基本资料：外文名 / 生日 / 地区 / 出生地 / 身高 / 体重 / 星座 / 语言
+- 简介：默认折叠 5 行，可展开
+
+解析在 `core/src/providers/kuwo/mod.rs::parse_singer_page`，
+结果是 24h 内存缓存，不会每次进页面都抓 200KB 的 HTML。
+
+## 歌词滚动页
+
+点播放器最左侧的封面进入歌词页（`Esc` 或「返回」退出）：
+
+- 当前行高亮，随播放进度自动滚动（只在「当前行变化」时滚动一次）
+- 点任意一句直接跳转
+- 背景是封面模糊图，底部带完整进度条
+- 播放时自动预取歌词并做内存缓存，详情接口限流也不阻塞播放
+
+## 下载内容：封面 + 歌词
+
+每首歌下载完成后：
+
+- **封面写进音频文件**：ID3v2.3 的 `APIC` 帧（front cover / image/jpeg），
+  换电脑、传到手机、车载播放器里都自带封面
+- **歌词另存同名 `.lrc`**：UTF-8 BOM，带 `[ti:][ar:][al:]` 头，主流播放器可识别
+
+歌词从详情接口取，封面从 CDN 取；两者都是「尽力而为」——
+拿不到就只下音频，不会因为附加内容失败而让整首歌失败。
+
+## 网盘（S3）
+
+设置页开启后，点任何「下载」都会先弹窗：**下载到本地** 还是 **下载到网盘**。
+
+- 网盘歌单 = 桶内前缀目录，支持新建/选择，批量与整张专辑下载会一次问清后顺序上传
+- 上传内容：音频（内嵌封面）+ 同名 `.lrc` + 封面 `.jpg`
+- 兼容 AWS S3 / MinIO / Cloudflare R2：Path-Style 与 Virtual-Hosted-Style 都支持
+- 签名是手写 SigV4（`sha2` + `hmac`），不引 aws-sdk
+- 下载记录里的路径是 `s3://bucket/key`
+
+S3 客户端在 [`core/src/s3.rs`](core/src/s3.rs)，
+歌单记录在 SQLite `s3_playlists` 表（只存名字，删歌单不动云上文件）。
+
+**网盘页**（侧边栏「网盘」）只做两件事：看歌单、看歌里的歌。
+
+- 列表：每个歌单一行（左侧拖拽把手 + 封面 + 名称 + 曲目数），右侧三个小按钮：播放整张 / 重命名 / 删除；
+  歌单支持按住拖动排序，顺序存在本地 SQLite（`s3_playlists.sort_order`），重启后保持；
+  「喜欢」是红心管理的保留歌单，只可播放。
+- 详情：点进歌单看歌曲列表，支持播放全部、单曲播放/暂停、删除单曲、重命名、删除歌单。
+- 新建歌单是弹窗输入；删除歌单会二次确认，并**连同云端文件一起删除**。
+- 重命名会把该目录下的对象逐个搬到新目录（GET→PUT→DELETE；RustFS 的 CopyObject
+  签名与 AWS 不一致，服务端复制用不了）。
+- 播放走 6 小时有效的 SigV4 签名直链（`presign_get`），不经过平台取链；
+  歌词取同目录 `.lrc`，封面取同名 `.jpg/.png/.webp`。
+
+设置页只保留网盘连接参数，不列出歌单。
+
+**账号歌单一键导入**：账号页每个歌单右侧的云图标 → 选目标网盘歌单（默认同名）→
+逐首「取流 → 下载（含封面/歌词）→ 上传」，带「第 N / 共 M 首」进度；
+中途失败的曲目会跳过并计数，不会因为一首失败中断整张歌单。
+
+## 滚动条
+
+Windows 的 WebView2 默认滚动条又宽又亮，和深色界面非常割裂。
+现在全局统一成 8px 细滚动条：透明轨道、圆角滑块、无上下箭头，
+同时写了 `scrollbar-width: thin` / `scrollbar-color`，Firefox 与新版 Chromium 也一致。
+
+## 托盘与关闭行为
+
+- 关闭主窗口 → **收进系统托盘，播放不中断**（设置里可关掉这个行为）
+- 托盘菜单：显示主界面 / 播放暂停 / 上一首 / 下一首 / 退出
+- macOS 点 Dock 图标也能把隐藏的窗口叫回来（`RunEvent::Reopen`）
+- 关掉「关闭时收进托盘」后，关闭窗口即退出，不留下没有窗口的进程
 
 ## 图标
 
@@ -141,8 +288,14 @@ grep -oE 'declare const \w+Icon' \
 comm -23 /tmp/used.txt /tmp/available.txt   # 必须为空
 ```
 
-用到的图标：Search01 · Star · Download01 · Settings01 · MusicNote01 · Play · Pause ·
-Previous · Next · Volume · ArrowLeft01 · FolderOpen。
+用到的图标：Search01 · **Heart（爱心）** · Download01 · FolderDownload（侧边栏下载）·
+Settings01 · MusicNote01 · Play · Pause · Loading03 · Previous · Next · Volume ·
+ArrowLeft01 · FolderOpen · Shuffle · Repeat · RepeatOne01 · ListMusic · Queue01 ·
+ChevronUp · Cancel01 · CloudUpload · History · Trash · Disc · Quote。
+
+侧边栏曾出现「下载和设置是同一个齿轮」的 bug：`features` 异步加载后导航项插队，
+未加 `key` 的 `{#each}` 复用了按钮，`HugeiconsIcon` 的 `icon` 属性没跟着更新。
+现在导航 `{#each nav as n (n.name)}` 强制按名字重建。
 
 无图标的按钮都补了 `aria-label`，装饰性图标标 `aria-hidden="true"`。
 
@@ -194,9 +347,11 @@ async fn logout(&self, s: &Session) -> Result<()>;
 
 - **账号页极简**：一个平台一张卡片（Logo + 平台名 + 登录状态 + 登录按钮）。
   新增平台只要往 `PLATFORMS` 数组里加一项。
-- **「喜欢」由平台能力决定**：`MusicProvider::features()` 返回
-  `ProviderFeatures { favorites: bool }`，为 `false` 时导航里不会出现该入口
-  —— 不给点了必然报错的页面。酷我通过 `type=MYFAVORITE` 歌单实现，返回 `true`。
+- **「喜欢」存在网盘里**（只有网盘启用时才出现）：点歌曲红心 = 写入本地缓存 +
+  上传 `前缀/favorites.json` + 把这首歌下载到网盘 `前缀/喜欢/` 目录。
+  换设备后打开 App 会自动 `favorites_pull` 合并云端列表。
+- **登录只是导入工具**：账号页登录后列出平台歌单，一键导入网盘；
+  喜欢不再依赖账号，也不再走平台的 `MYFAVORITE` 歌单。
 - **没有独立的「歌单」入口** —— 用户自己的歌单在账号卡片下方，登录后列出。
   公开歌单搜索入口已移除，避免和「我的歌单」混淆。
 - **批量下载**：专辑页、歌单页、搜索结果、喜欢列表都有「下载全部」，

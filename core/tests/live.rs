@@ -5,7 +5,7 @@
 //! ```
 
 use std::sync::Arc;
-use tinymusic_core::download::{build_filename, Downloader};
+use tinymusic_core::download::{build_filename, DownloadExtras, Downloader};
 use tinymusic_core::http::HttpClient;
 use tinymusic_core::model::{MusicProvider, Quality};
 use tinymusic_core::providers::kuwo::KuwoProvider;
@@ -90,12 +90,15 @@ async fn live_download_writes_tagged_file() {
     let dl = Downloader::new(http);
     let dir = std::env::temp_dir().join("tinymusic_live_dl");
     let fname = build_filename(&track, "mp3");
+    // 顺带验证封面 + 歌词：真实运行时由外壳传入，这里用空 extras 保证链路可编译
+    let extras = DownloadExtras::default();
     let path = dl
         .run(
             &track,
             &info,
             &dir,
             &fname,
+            &extras,
             Box::new(|done, total| {
                 if let Some(t) = total {
                     if done == t {

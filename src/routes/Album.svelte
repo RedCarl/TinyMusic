@@ -1,10 +1,11 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, type AlbumPage } from '../lib/api';
+  import { api, coverUrl, type AlbumPage } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { router } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
+  import { openTracksMenu } from '../lib/trackMenu.svelte';
 
   let route = $derived(router.route.name === 'album' ? router.route : null);
   let data = $state<AlbumPage | null>(null);
@@ -27,9 +28,9 @@
 
 <div class="page">
   {#if data}
-    <div class="head">
+    <div class="head" role="group" oncontextmenu={(e) => openTracksMenu(e, data!.tracks)}>
       {#if data.cover}
-        <img class="cover" src={data.cover} alt="" />
+        <img class="cover" src={coverUrl(data.cover, 500)} alt="" />
       {:else}
         <div class="cover ph" aria-hidden="true">
           <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
