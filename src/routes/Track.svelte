@@ -8,6 +8,7 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
   import { copyText } from '../lib/toast.svelte';
+  import BackLink from '../components/BackLink.svelte';
 
   let track = $derived(router.route.name === 'track' ? (router.route.track as Track) : null);
   let detail = $state<TrackDetail | null>(null);

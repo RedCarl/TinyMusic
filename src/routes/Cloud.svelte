@@ -7,6 +7,7 @@
   import { appCfg, refreshAppCfg } from '../lib/config.svelte';
   import { showToast } from '../lib/toast.svelte';
   import { player, playTrack, toggle } from '../lib/player.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
 
   let lists = $state<S3PlaylistInfo[]>([]);
   let rows = $state<S3TrackRow[]>([]);
@@ -256,7 +257,7 @@
     {#if err}<div class="err">{err}</div>{/if}
 
     {#if loading}
-      <div class="muted">读取中…</div>
+      <SkeletonList rows={4} />
     {:else if !appCfg.s3Enabled}
       <div class="empty">
         <div class="big" aria-hidden="true">
@@ -372,7 +373,7 @@
     {#if err}<div class="err">{err}</div>{/if}
 
     {#if detailLoading}
-      <div class="muted">读取中…</div>
+      <SkeletonList rows={6} />
     {:else if rows.length === 0}
       <div class="empty"><p>这个歌单还是空的</p></div>
     {:else}

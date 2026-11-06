@@ -5,6 +5,8 @@
   import { router, go } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import { openAlbumMenu } from '../lib/trackMenu.svelte';
+  import BackLink from '../components/BackLink.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
 
   let route = $derived(router.route.name === 'artist' ? router.route : null);
   let data = $state<ArtistPage | null>(null);
@@ -35,6 +37,7 @@
 </script>
 
 <div class="page">
+  <BackLink />
   {#if data}
     <div class="artist-head">
       {#if data.pic && !picErr}
@@ -105,7 +108,7 @@
       </div>
     {/if}
   {:else if loading}
-    <div class="muted">加载中…</div>
+    <SkeletonList rows={8} />
   {:else if err}
     <div class="err">{err}</div>
   {/if}

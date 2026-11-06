@@ -7,6 +7,7 @@
   import { go } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
 
   let tracks = $state<Track[]>([]);
   let loading = $state(true);
@@ -62,7 +63,7 @@
   {#if err}<div class="err">{err}</div>{/if}
 
   {#if !appCfg.loaded || loading}
-    <div class="muted">读取中…</div>
+    <SkeletonList rows={6} />
   {:else if !appCfg.s3Enabled}
     <div class="empty">
       <div class="big" aria-hidden="true">

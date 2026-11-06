@@ -1723,21 +1723,18 @@ async fn upload_track_to_s3(
 ) -> Result<String, String> {
     let ext = ext_for(&info.content_type);
     let key = object_key(&s3.config().prefix, playlist, track, ext);
-    let temp = state.config_dir.join("s3tmp").join(task_id);
-    let fname = build_filename(track, ext);
 
     let provider = state.provider(&track.provider)?;
     let extras = build_extras(&state.http, provider.as_ref(), track).await;
 
     let ch = on_progress.cloned();
     let tid = task_id.to_string();
-    let path = state
+    // 直接在内存里下载 + 打标签，不写临时文件：避免被杀软误判为「加密/删除用户音乐」
+    let bytes = state
         .downloader
-        .run(
+        .fetch_bytes(
             track,
             info,
-            &temp,
-            &fname,
             &extras,
             Box::new(move |d, t| {
                 if let Some(ch) = &ch {
@@ -1751,8 +1748,6 @@ async fn upload_track_to_s3(
         )
         .await
         .map_err(|e| e.to_string())?;
-
-    let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
     let size = bytes.len() as i64;
     s3.put_object(&key, bytes, audio_content_type(&key))
         .await
@@ -1787,7 +1782,6 @@ async fn upload_track_to_s3(
         .insert_download(task_id, track, info.quality, &path_str, size, "done")
         .map_err(|e| e.to_string())?;
 
-    let _ = tokio::fs::remove_dir_all(&temp).await;
     Ok(key)
 }
 
@@ -2104,8 +2098,9 @@ pub fn run() {
                 .unwrap_or_else(|_| std::env::temp_dir().join("tinymusic"));
             let _ = std::fs::create_dir_all(&config_dir);
 
-            // 清掉上次异常退出留下的网盘临时文件
-            let _ = std::fs::remove_dir_all(config_dir.join("s3tmp"));
+            // 旧版本会在 s3tmp 里落临时 mp3；现在上传走内存，不再产生文件。
+            // 这里只尝试删空目录，避免递归删媒体文件被杀软当成可疑行为。
+            let _ = std::fs::remove_dir(config_dir.join("s3tmp"));
 
             let http = Arc::new(HttpClient::new(700, 3));
             let proxy = tauri::async_runtime::block_on(StreamProxy::start(http.clone()))

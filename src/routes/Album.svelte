@@ -6,6 +6,8 @@
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
   import { openTracksMenu } from '../lib/trackMenu.svelte';
+  import BackLink from '../components/BackLink.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
 
   let route = $derived(router.route.name === 'album' ? router.route : null);
   let data = $state<AlbumPage | null>(null);
@@ -27,6 +29,7 @@
 </script>
 
 <div class="page">
+  <BackLink />
   {#if data}
     <div class="head" role="group" oncontextmenu={(e) => openTracksMenu(e, data!.tracks)}>
       {#if data.cover}
@@ -50,7 +53,7 @@
       {/each}
     </div>
   {:else if loading}
-    <div class="muted">加载中…</div>
+    <SkeletonList rows={10} />
   {:else if err}
     <div class="err">{err}</div>
   {/if}

@@ -64,6 +64,57 @@ impl Downloader {
     ///
     /// 如果 `extras` 里有封面，会写进 ID3 的 APIC 帧（封面随文件走）；
     /// 如果有歌词，会在音频旁边生成同名 `.lrc`。
+    /// 下载到内存（网盘上传用）：不落盘，避免杀软把「写临时 mp3 再删除」判成破坏行为。
+    pub async fn fetch_bytes(
+        &self,
+        track: &Track,
+        info: &StreamInfo,
+        extras: &DownloadExtras,
+        on_progress: ProgressFn,
+    ) -> Result<Vec<u8>> {
+        let resp = self.http.get_range(&info.url, None).await?;
+        if !resp.status().is_success() {
+            return Err(Error::Http(format!("下载状态码 {}", resp.status().as_u16())));
+        }
+        let total = resp.content_length().or(info.bytes);
+        let mut resp = resp;
+        let mut written: u64 = 0;
+        let mut buf: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+        while let Some(chunk) = resp.chunk().await? {
+            written += chunk.len() as u64;
+            buf.extend_from_slice(&chunk);
+            on_progress(written, total);
+        }
+
+        if written == PLACEHOLDER_BYTES {
+            return Err(Error::Unavailable);
+        }
+        if track.duration_sec >= 30 && info.quality != Quality::Lossless {
+            let est = (written as f64 * 8.0) / (info.quality.nominal_kbps() as f64 * 1000.0);
+            if est * 100.0 < (track.duration_sec as f64) * 60.0 {
+                return Err(Error::Unavailable);
+            }
+        }
+
+        // 剥离远端可能自带的 ID3 头，再写入带封面的标签
+        let skip = {
+            let mut cur = std::io::Cursor::new(&buf[..]);
+            id3::existing_tag_len(&mut cur).unwrap_or(0) as usize
+        };
+        let audio = if skip > 0 && skip < buf.len() { &buf[skip..] } else { &buf[..] };
+        let mime = if extras.cover_mime.trim().is_empty() {
+            "image/jpeg"
+        } else {
+            extras.cover_mime.as_str()
+        };
+        let cover = extras.cover.as_ref().map(|c| (c.as_slice(), mime));
+        let tag = id3::build_tag_ext(&track.title, &track.artist, &track.album, "", cover);
+        let mut out = Vec::with_capacity(tag.len() + audio.len());
+        out.extend_from_slice(&tag);
+        out.extend_from_slice(audio);
+        Ok(out)
+    }
+
     pub async fn run(
         &self,
         track: &Track,

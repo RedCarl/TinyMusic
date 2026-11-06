@@ -19,11 +19,54 @@ export type Route =
   | { name: 'library' }
   | { name: 'settings' };
 
-export const router = $state<{ route: Route }>({ route: { name: 'search' } });
+/** 侧边栏一级页面：进入时清空返回栈 */
+const TOP_LEVEL: ReadonlySet<Route['name']> = new Set([
+  'search',
+  'account',
+  'downloads',
+  'cloud',
+  'library',
+  'settings'
+]);
+
+export const router = $state<{ route: Route; history: Route[] }>({
+  route: { name: 'search' },
+  history: []
+});
+
+function sameRoute(a: Route, b: Route): boolean {
+  if (a.name !== b.name) return false;
+  if (a.name === 'artist' && b.name === 'artist') return a.artistId === b.artistId;
+  if (a.name === 'album' && b.name === 'album') return a.albumId === b.albumId;
+  if (a.name === 'playlist' && b.name === 'playlist') return a.playlistId === b.playlistId;
+  if (a.name === 'track' && b.name === 'track') return a.track.id === b.track.id;
+  return true;
+}
 
 export function go(r: Route) {
+  const current = router.route;
+  if (sameRoute(current, r)) return;
+
+  if (TOP_LEVEL.has(r.name)) {
+    router.history = [];
+  } else {
+    router.history = [...router.history, current];
+  }
   router.route = r;
   scrollMainTop();
+}
+
+/** 返回上一级；没有可返回的页面时返回 false */
+export function back(): boolean {
+  const prev = router.history.pop();
+  if (!prev) return false;
+  router.route = prev;
+  scrollMainTop();
+  return true;
+}
+
+export function canBack(): boolean {
+  return router.history.length > 0;
 }
 
 /** 把主滚动区域拉回顶部（切页、换搜索结果时都需要） */

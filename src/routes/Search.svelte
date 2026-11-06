@@ -7,6 +7,7 @@
   import TrackRow from '../components/TrackRow.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { openAlbumMenu } from '../lib/trackMenu.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
   import BatchBar from '../components/BatchBar.svelte';
   import {
     searchState,
@@ -185,6 +186,10 @@
 
   {#if searchState.err}
     <div class="err">{searchState.err}</div>
+  {/if}
+
+  {#if loading && !result}
+    <SkeletonList rows={8} />
   {/if}
 
   {#if result}

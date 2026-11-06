@@ -5,8 +5,10 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
   import { copyText, showToast } from '../lib/toast.svelte';
+  import SkeletonList from '../components/SkeletonList.svelte';
 
   let rows = $state<DownloadRow[]>([]);
+  let loaded = $state(false);
   let err = $state('');
   let timer: number | undefined;
   let confirmClear = $state(false);
@@ -17,6 +19,8 @@
       rows = await api.downloads();
     } catch (e) {
       err = String(e);
+    } finally {
+      loaded = true;
     }
   }
 
@@ -116,7 +120,9 @@
 
   {#if err}<div class="err">{err}</div>{/if}
 
-  {#if rows.length === 0}
+  {#if !loaded}
+    <SkeletonList rows={6} />
+  {:else if rows.length === 0}
     <div class="empty">
       <div class="big" aria-hidden="true">
         <HugeiconsIcon icon={icons.download} size={ICON_SIZE.empty} />

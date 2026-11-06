@@ -567,3 +567,20 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
 - 退出登录会清掉酷我网页登录态的 cookie 与 localStorage，换账号不会再沿用上一个账号。
 - 下载记录支持「清除记录」：只清空列表，不删除本地/网盘文件。
 - 登录窗口里的 QQ / 微信扫码页通过 `on_new_window` 打开成置顶子窗口。
+
+## 杀软误报与签名
+
+网盘下载早期版本会把音频先写到 `%APPDATA%/com.tinymusic.app/s3tmp` 再删除，
+部分国产杀软（如 360）会把「媒体文件被创建后删除」判定为勒索行为。
+
+现在上传走内存：`Downloader::fetch_bytes` 直接下载到内存并打标签，不再产生临时 mp3，
+启动时也不再递归删除旧目录，只尝试删空目录。
+
+如果仍被拦截：
+
+1. 安装包/主程序做 Windows 代码签名（Authenticode）。有证书后可在 `tauri.conf.json`
+   配置 `bundle.windows.certificateThumbprint`，或在 CI 里用 `signtool` 签
+   `tinymusic.exe`、安装包和 MSI；EV 证书可立即消除 SmartScreen 提示。
+2. 向杀毒厂商提交误报：360 开放平台「误报申诉」、微软 Defender 样本提交，
+   附上版本号与文件哈希，一般 1~3 个工作日处理。
+3. 用户侧临时处理：把安装目录与 `%APPDATA%/com.tinymusic.app` 加入信任区。
