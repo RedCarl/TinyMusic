@@ -128,26 +128,30 @@
   </button>
 
   <div class="title">
-    <div class="t1">
-      {track.title}
-      {#if track.subtitle}<span class="sub">{track.subtitle}</span>{/if}
-      {#if track.availability === 'preview_only'}<span class="badge warn">仅试听</span>{/if}
-      {#if vipOnly}<span class="badge warn">会员曲</span>{/if}
-      {#if track.availability === 'unavailable'}<span class="badge mute">不可用</span>{/if}
-    </div>
-    <div class="t2">
+    <span class="ttl" title={track.subtitle ? `${track.title} · ${track.subtitle}` : track.title}
+      >{track.title}{#if track.subtitle}<span class="sub">{track.subtitle}</span>{/if}</span
+    >
+    {#if track.availability === 'preview_only'}<span class="badge warn">仅试听</span>{/if}
+    {#if vipOnly}<span class="badge warn">会员曲</span>{/if}
+    {#if track.availability === 'unavailable'}<span class="badge mute">不可用</span>{/if}
+  </div>
+
+  <div class="artist">
+    <button
+      class="link trunc"
+      title={track.artist || '未知艺人'}
+      onclick={() => go({ name: 'artist', provider: track.provider, artistId: track.artist_id, title: track.artist })}
+    >{track.artist || '未知艺人'}</button>
+  </div>
+
+  <div class="album">
+    {#if track.album}
       <button
-        class="link"
-        onclick={() => go({ name: 'artist', provider: track.provider, artistId: track.artist_id, title: track.artist })}
-      >{track.artist || '未知艺人'}</button>
-      {#if track.album}
-        <span class="dot">·</span>
-        <button
-          class="link"
-          onclick={() => go({ name: 'album', provider: track.provider, albumId: track.album_id, title: track.album })}
-        >{track.album}</button>
-      {/if}
-    </div>
+        class="link trunc"
+        title={track.album}
+        onclick={() => go({ name: 'album', provider: track.provider, albumId: track.album_id, title: track.album })}
+      >{track.album}</button>
+    {/if}
   </div>
 
   <div class="heat" title={track.hot ? `热度 ${track.hot}` : '热度未知'}>

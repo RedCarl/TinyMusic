@@ -293,7 +293,7 @@ h1 {
 
 .row {
   display: grid;
-  grid-template-columns: 34px 34px 1fr 76px 54px 96px;
+  grid-template-columns: 34px 34px minmax(0, 1fr) minmax(0, 112px) minmax(0, 142px) 76px 54px 96px;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -363,7 +363,35 @@ h1 {
 }
 
 .title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
+}
+
+.ttl {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artist,
+.album {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.link.trunc {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
 
 .t1 {
@@ -379,6 +407,7 @@ h1 {
 .sub {
   color: var(--fg3);
   font-size: 12px;
+  margin-left: 6px;
 }
 
 .badge {
