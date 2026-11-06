@@ -60,19 +60,26 @@
     }, 120) as unknown as number;
   }
 
+  let albumsLoading = $state(false);
+
   async function loadArtist(items: Track[]) {
     searchState.artistName = '';
     searchState.artistId = '';
     searchState.albums = [];
+    albumsLoading = false;
     const first = items.find((t) => t.artist_id);
     if (!first) return;
     searchState.artistName = first.artist;
     searchState.artistId = first.artist_id;
+    // 专辑接口比搜索慢，先把骨架屏占住位置，避免歌曲列表出来后再“弹”出一排专辑
+    albumsLoading = true;
     try {
       const ap = await api.artist('kuwo', first.artist_id, first.artist, 0);
       searchState.albums = ap.albums;
     } catch {
       searchState.albums = [];
+    } finally {
+      albumsLoading = false;
     }
   }
 
@@ -95,6 +102,7 @@
         searchState.artistName = '';
         searchState.artistId = '';
         searchState.albums = [];
+        albumsLoading = false;
       }
     } catch (e) {
       searchState.err = String(e);
@@ -193,7 +201,7 @@
   {/if}
 
   {#if result}
-    {#if searchState.albums.length > 0}
+    {#if albumsLoading || searchState.albums.length > 0}
       <div class="section-head">
         <span>{searchState.artistName} 的专辑</span>
         <button
@@ -210,7 +218,15 @@
         </button>
       </div>
       <div class="albumrow">
-        {#each searchState.albums as a (a.id)}
+        {#if albumsLoading}
+          {#each Array(6) as _, i (i)}
+            <div class="albumcard skc" aria-hidden="true">
+              <span class="sk sk-album"></span>
+              <span class="sk sk-line w1"></span>
+            </div>
+          {/each}
+        {:else}
+          {#each searchState.albums as a (a.id)}
           <button
             class="albumcard"
             onclick={() => openAlbum(a)}
@@ -223,9 +239,10 @@
                 <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
               </div>
             {/if}
-            <div class="an">{a.name}</div>
-          </button>
-        {/each}
+              <div class="an">{a.name}</div>
+            </button>
+          {/each}
+        {/if}
       </div>
     {/if}
 

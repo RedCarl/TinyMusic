@@ -3031,3 +3031,15 @@ button.primary:disabled {
     transition: none !important;
   }
 }
+
+/* 搜索页专辑骨架 */
+.sk-album {
+  width: 132px;
+  height: 132px;
+  border-radius: 10px;
+}
+
+.albumcard.skc .sk-line {
+  margin-top: 8px;
+  width: 76px;
+}
