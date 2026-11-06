@@ -769,6 +769,26 @@ const AUTO_LOGIN_JS: &str = r#"
   try {
     // 网页里的 QQ/微信扫码是 window.open 出来的，webview 不一定能触发新窗口请求，
     // 这里直接接管，交给主进程开窗口。
+    // 微信图标被点击时，不管站点自己的 window.open 是否被拦，都直接通知主进程开扫码窗
+    if (!window.__kwWxBound) {
+      window.__kwWxBound = true;
+      document.addEventListener('click', function (e) {
+        try {
+          var el = e.target;
+          for (var i = 0; i < 4 && el; i++) {
+            var tx = (el.textContent || '').trim();
+            if (tx === '微信' || (tx.indexOf('微信') >= 0 && tx.length < 12)) {
+              e.preventDefault();
+              e.stopPropagation();
+              document.cookie = 'kwprobe_wx=1;path=/;max-age=60';
+              return;
+            }
+            el = el.parentElement;
+          }
+        } catch (err) {}
+      }, true);
+    }
+
     if (!window.__kwOpenPatched) {
       window.__kwOpenPatched = true;
       window.open = function (u) {
@@ -1056,8 +1076,10 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
             let mut modal_open = false;
             let mut has_uid = false;
             let mut popup_url: Option<String> = None;
+            let mut wechat_clicked = false;
             for c in &cookies {
                 match c.name() {
+                    "kwprobe_wx" => wechat_clicked = c.value() == "1",
                     "kwprobe_pop" => {
                         let v = url_decode(c.value());
                         if v.starts_with("http") {
@@ -1073,6 +1095,13 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                         }
                     }
                     _ => {}
+                }
+            }
+
+            if wechat_clicked {
+                let _ = w.eval("document.cookie='kwprobe_wx=;path=/;max-age=0'");
+                if let Err(e) = open_login_popup(&handle, &wechat_login_url()) {
+                    eprintln!("[tinymusic] wechat popup failed: {e}");
                 }
             }
 
@@ -1268,6 +1297,31 @@ fn open_login_popup(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let _ = w.set_focus();
     Ok(())
+}
+
+fn url_encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// 酷我微信扫码登录地址（与官网 wxLogin 的拼法一致）
+fn wechat_login_url() -> String {
+    let callback = url_encode_component("https://www.kuwo.cn/callback");
+    let inner = format!(
+        "http://i.kuwo.cn/US/platform/WeixinCallback.jsp?f=web&callbackUrl={callback}"
+    );
+    format!(
+        "https://open.weixin.qq.com/connect/qrconnect?appid=wx41c1275bb3e28427&response_type=code&scope=snsapi_login&redirect_uri={}",
+        url_encode_component(&inner)
+    )
 }
 
 fn url_decode(s: &str) -> String {
