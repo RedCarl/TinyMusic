@@ -2775,3 +2775,50 @@ button.primary:disabled {
   color: var(--warn);
   opacity: 0.9;
 }
+
+/* ================= 下载弹窗：表单间距 ================= */
+.modal .field {
+  padding: 14px 18px 4px;
+}
+
+.modal .field .lbl {
+  margin-bottom: 8px;
+}
+
+.modal .select {
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+}
+
+.modal .newpl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.modal .newpl input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+}
+
+.modal .newpl .mini {
+  flex: none;
+  height: 38px;
+  padding: 0 14px;
+  white-space: nowrap;
+}
+
+.modal .dl-preview {
+  margin-top: 12px;
+  padding: 0 18px;
+  max-height: 210px;
+}
+
+.modal .dl-prow {
+  padding: 9px 12px;
+}
