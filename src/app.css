@@ -2835,16 +2835,6 @@ button.primary:disabled {
   background: linear-gradient(90deg, #3d7bf0, #6aa4ff);
 }
 
-.heat-bar i::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: repeating-linear-gradient(
-    90deg,
-    transparent 0 3px,
-    rgba(0, 0, 0, 0.28) 3px 5px
-  );
-}
 
 /* ================= 下载弹窗：表单间距 ================= */
 .modal .field {
