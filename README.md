@@ -584,3 +584,8 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
 2. 向杀毒厂商提交误报：360 开放平台「误报申诉」、微软 Defender 样本提交，
    附上版本号与文件哈希，一般 1~3 个工作日处理。
 3. 用户侧临时处理：把安装目录与 `%APPDATA%/com.tinymusic.app` 加入信任区。
+
+## 外观主题
+
+设置 → 外观提供「跟随系统 / 浅色 / 深色」三档，默认跟随系统，选择存在 localStorage。
+切换会同时更新应用内配色和窗口标题栏（`set_window_theme`），系统主题变化时自动跟随。

@@ -241,6 +241,8 @@ export const api = {
   /** 探测是否已登录，返回 uid */
   loginVisible: () => invoke<boolean>('login_visible'),
   loginPurge: () => invoke<void>('login_purge'),
+  setWindowTheme: (mode: 'auto' | 'light' | 'dark') =>
+    invoke<void>('set_window_theme', { theme: mode === 'auto' ? null : mode }),
   loginProbe: () => invoke<string | null>('login_probe'),
   loginClose: () => invoke<void>('login_close'),
 

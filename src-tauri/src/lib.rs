@@ -1206,6 +1206,17 @@ async fn login_purge(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 让窗口标题栏跟随应用主题；auto 时传 None，交还给系统
+#[tauri::command]
+fn set_window_theme(window: tauri::WebviewWindow, theme: Option<String>) -> Result<(), String> {
+    let t = match theme.as_deref() {
+        Some("light") => Some(tauri::Theme::Light),
+        Some("dark") => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    window.set_theme(t).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn login_close(app: tauri::AppHandle) -> Result<(), String> {
     close_login_popups(&app);
@@ -2177,6 +2188,7 @@ pub fn run() {
             login_open,
             login_visible,
             login_purge,
+            set_window_theme,
             login_probe,
             login_close,
             favorites,

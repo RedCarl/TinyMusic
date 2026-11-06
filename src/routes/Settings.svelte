@@ -4,6 +4,7 @@
   import { api, type Settings, type Quality } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { refreshAppCfg } from '../lib/config.svelte';
+  import { theme, setTheme, type ThemeMode } from '../lib/theme.svelte';
   import { getVersion } from '@tauri-apps/api/app';
   import { check, type Update } from '@tauri-apps/plugin-updater';
   import { relaunch } from '@tauri-apps/plugin-process';
@@ -140,6 +141,12 @@
     }
   }
 
+  const themeOptions: { v: ThemeMode; label: string }[] = [
+    { v: 'auto', label: '跟随系统' },
+    { v: 'light', label: '浅色' },
+    { v: 'dark', label: '深色' }
+  ];
+
   const qualities: { v: Quality; label: string }[] = [
     { v: 'high', label: '标准 128k' },
     { v: 'super', label: '高品质 320k' },
@@ -148,6 +155,25 @@
 
 <div class="page">
   <h1>设置</h1>
+
+  <div class="field">
+    <div class="lbl">外观</div>
+    <div class="radios">
+      {#each themeOptions as t (t.v)}
+        <label class="radio">
+          <input
+            type="radio"
+            name="theme"
+            value={t.v}
+            checked={theme.mode === t.v}
+            onchange={() => setTheme(t.v)}
+          />
+          <span>{t.label}</span>
+        </label>
+      {/each}
+    </div>
+    <div class="hint">默认跟随系统；切换立即生效，只影响本机</div>
+  </div>
 
   <div class="field">
     <div class="lbl">下载目录</div>
