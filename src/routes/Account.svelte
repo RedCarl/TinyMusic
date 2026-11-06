@@ -103,7 +103,10 @@
     api.loginClose().catch(() => {});
   }
 
-  function logout() {
+  async function logout() {
+    loginBusy = false;
+    stopPoll();
+    await api.loginClose().catch(() => {});
     account.uid = '';
     playlists = [];
     try {
@@ -111,6 +114,8 @@
     } catch {
       /* ignore */
     }
+    // 清掉网页登录态，否则再登录会直接沿用上一个账号
+    await api.loginPurge().catch(() => {});
   }
 
   async function loadPlaylists() {

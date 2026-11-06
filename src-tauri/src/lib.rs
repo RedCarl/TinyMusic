@@ -584,6 +584,11 @@ fn download_list(state: State<'_, AppState>) -> Result<Vec<DownloadRow>, String>
 }
 
 #[tauri::command]
+fn download_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.storage.clear_downloads().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn favorite_add(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -951,6 +956,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let url = tauri::Url::parse("https://www.kuwo.cn/").map_err(|e| e.to_string())?;
+    let popup_app = app.clone();
     let w = tauri::WebviewWindowBuilder::new(&app, LOGIN_LABEL, tauri::WebviewUrl::External(url))
         .title("酷我登录")
         // 普通窗口：保留标题栏和关闭按钮
@@ -963,6 +969,28 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         // 所以先把页面亮出来，用户点一次右上角「登录/注册」后我们再收成登录框
         .visible(false)
         .inner_size(1280.0, 800.0)
+        .on_new_window(move |url, features| {
+            // QQ / 微信登录会 window.open 一个扫码页；WKWebView 默认弹不出来，这里显式建一个
+            static POPUP_SEQ: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let seq = POPUP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let label = format!("kwlogin-pop-{seq}");
+            let builder = tauri::WebviewWindowBuilder::new(
+                &popup_app,
+                &label,
+                tauri::WebviewUrl::External(url.clone()),
+            )
+            .window_features(features)
+            .always_on_top(true)
+            .title("酷我登录")
+            .on_document_title_changed(|window, title| {
+                let _ = window.set_title(&title);
+            });
+            match builder.build() {
+                Ok(window) => tauri::webview::NewWindowResponse::Create { window },
+                Err(_) => tauri::webview::NewWindowResponse::Deny,
+            }
+        })
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -1036,6 +1064,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
             }
 
             if has_uid {
+                close_login_popups(&handle);
                 return; // 登录成功，交给前端读取 uid
             }
 
@@ -1109,8 +1138,77 @@ async fn login_probe(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+/// 登录过程中弹出的扫码窗口（QQ / 微信等）
+fn close_login_popups(app: &tauri::AppHandle) {
+    for (label, w) in app.webview_windows() {
+        if label.starts_with("kwlogin-pop") {
+            let _ = w.close();
+        }
+    }
+}
+
+fn clear_kuwo_cookies(w: &tauri::WebviewWindow) {
+    if let Ok(cookies) = w.cookies() {
+        for c in cookies {
+            let domain = c.domain().unwrap_or("");
+            if !domain.contains("kuwo.cn") && !c.name().starts_with("kw") {
+                continue;
+            }
+            let mut b = tauri::webview::cookie::Cookie::build((
+                c.name().to_string(),
+                String::new(),
+            ))
+            .path(c.path().unwrap_or("/").to_string())
+            .secure(c.secure().unwrap_or(true))
+            .max_age(tauri::webview::cookie::time::Duration::ZERO);
+            if !domain.is_empty() {
+                b = b.domain(domain.to_string());
+            }
+            let ck = b.build();
+            let _ = w.delete_cookie(ck);
+        }
+    }
+}
+
+/// 退出登录时清掉酷我网页登录态（cookie + localStorage），否则会一直沿用上一个账号
+#[tauri::command]
+async fn login_purge(app: tauri::AppHandle) -> Result<(), String> {
+    close_login_popups(&app);
+
+    let existing = app.get_webview_window(LOGIN_LABEL);
+    let (w, created) = match existing {
+        Some(w) => (w, false),
+        None => {
+            let url =
+                tauri::Url::parse("https://www.kuwo.cn/").map_err(|e| e.to_string())?;
+            let w = tauri::WebviewWindowBuilder::new(
+                &app,
+                "kwlogin-purge",
+                tauri::WebviewUrl::External(url),
+            )
+            .visible(false)
+            .inner_size(420.0, 320.0)
+            .build()
+            .map_err(|e| e.to_string())?;
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            (w, true)
+        }
+    };
+
+    let _ = w.eval(
+        "try{localStorage.clear();sessionStorage.clear();document.cookie='';}catch(e){}",
+    );
+    clear_kuwo_cookies(&w);
+
+    if created {
+        let _ = w.close();
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn login_close(app: tauri::AppHandle) -> Result<(), String> {
+    close_login_popups(&app);
     if let Some(w) = app.get_webview_window(LOGIN_LABEL) {
         w.close().map_err(|e| e.to_string())?;
     }
@@ -2070,6 +2168,7 @@ pub fn run() {
             player_open,
             download_start,
             download_list,
+            download_clear,
             favorite_add,
             favorite_remove,
             favorite_list,
@@ -2082,6 +2181,7 @@ pub fn run() {
             user_playlists,
             login_open,
             login_visible,
+            login_purge,
             login_probe,
             login_close,
             favorites,

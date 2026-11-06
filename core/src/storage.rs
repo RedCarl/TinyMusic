@@ -163,6 +163,7 @@ impl Storage {
                 album_id: r.get(6)?,
                 duration_sec: r.get::<_, i64>(7).unwrap_or(0) as u32,
                 cover: r.get(8)?,
+                hot: 0,
                 availability: crate::model::Availability::Unknown,
                 subtitle: None,
             })
@@ -217,6 +218,13 @@ impl Storage {
             "UPDATE downloads SET status=?2, bytes=?3 WHERE task_id=?1",
             params![task_id, status, bytes],
         )?;
+        Ok(())
+    }
+
+    /// 清空下载记录（不删除已下载的文件）
+    pub fn clear_downloads(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM downloads", [])?;
         Ok(())
     }
 
@@ -409,6 +417,7 @@ mod tests {
             cover: Some("https://img1.kuwo.cn/star/albumcover/x.jpg".into()),
             availability: crate::model::Availability::Unknown,
             subtitle: None,
+            hot: 0,
         }
     }
 

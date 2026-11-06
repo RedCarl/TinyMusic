@@ -201,6 +201,7 @@ export const api = {
   },
 
   downloads: () => invoke<DownloadRow[]>('download_list'),
+  downloadClear: () => invoke<void>('download_clear'),
 
   favoriteAdd: (track: Track) => invoke<void>('favorite_add', { track }),
   favoriteRemove: (provider: string, id: string) =>
@@ -239,6 +240,7 @@ export const api = {
   loginOpen: () => invoke<void>('login_open'),
   /** 探测是否已登录，返回 uid */
   loginVisible: () => invoke<boolean>('login_visible'),
+  loginPurge: () => invoke<void>('login_purge'),
   loginProbe: () => invoke<string | null>('login_probe'),
   loginClose: () => invoke<void>('login_close'),
 

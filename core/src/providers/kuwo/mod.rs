@@ -336,6 +336,7 @@ impl KuwoProvider {
                 Availability::Unknown
             },
             subtitle: None,
+            hot: 0,
         }
     }
 
@@ -400,6 +401,7 @@ impl KuwoProvider {
             },
             availability: probe_availability_hint(v),
             subtitle,
+            hot: kwjson::u(v, "SCORE100"),
         }
     }
 
@@ -407,11 +409,13 @@ impl KuwoProvider {
     pub fn parse_search(body: &str, page: u32, limit: u32) -> Result<SearchPage> {
         let v = kwjson::parse(body)?;
         let total = kwjson::u(&v, "TOTAL");
-        let items = v
+        let mut items = v
             .get("abslist")
             .and_then(|a| a.as_array())
             .map(|arr| arr.iter().map(Self::map_item).collect::<Vec<_>>())
             .unwrap_or_default();
+        // 按热度（站点搜索分）从高到低，分页内排序
+        items.sort_by(|a, b| b.hot.cmp(&a.hot));
         Ok(SearchPage {
             total,
             page,

@@ -4,11 +4,13 @@
   import { icons, ICON_SIZE } from '../lib/icons';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
-  import { copyText } from '../lib/toast.svelte';
+  import { copyText, showToast } from '../lib/toast.svelte';
 
   let rows = $state<DownloadRow[]>([]);
   let err = $state('');
   let timer: number | undefined;
+  let confirmClear = $state(false);
+  let clearing = $state(false);
 
   async function refresh() {
     try {
@@ -23,6 +25,25 @@
     timer = setInterval(refresh, 1500) as unknown as number;
     return () => clearInterval(timer);
   });
+
+  async function doClear() {
+    if (clearing) return;
+    clearing = true;
+    try {
+      await api.downloadClear();
+      rows = [];
+      confirmClear = false;
+      showToast('已清除下载记录');
+    } catch (e) {
+      err = String(e);
+    } finally {
+      clearing = false;
+    }
+  }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key === 'Escape') confirmClear = false;
+  }
 
   /** 下载记录里只有基础字段，重新下载时补成 Track */
   function rowTrack(r: DownloadRow): Track {
@@ -84,6 +105,12 @@
       <HugeiconsIcon icon={icons.folder} size={ICON_SIZE.inline} />
       打开目录
     </button>
+    {#if rows.length > 0}
+      <button class="mini" onclick={() => (confirmClear = true)}>
+        <HugeiconsIcon icon={icons.trash} size={ICON_SIZE.inline} />
+        清除记录
+      </button>
+    {/if}
     <span class="hint">每首歌都会内嵌封面，并生成同名 .lrc 歌词文件</span>
   </div>
 
@@ -124,3 +151,33 @@
     </table>
   {/if}
 </div>
+
+<svelte:window onkeydown={onKey} />
+
+{#if confirmClear}
+  <div
+    class="modal-mask"
+    role="presentation"
+    onclick={(e) => {
+      if (e.target === e.currentTarget) confirmClear = false;
+    }}
+  >
+    <div class="modal narrow" role="dialog" aria-modal="true" aria-label="清除下载记录">
+      <div class="modal-head">
+        <h2>清除下载记录</h2>
+        <button class="icon" onclick={() => (confirmClear = false)} aria-label="关闭">
+          <HugeiconsIcon icon={icons.close} size={ICON_SIZE.inline} />
+        </button>
+      </div>
+      <p class="modal-note">
+        只清空这份记录，不会删除已经下载到本地或网盘的文件。
+      </p>
+      <div class="modal-actions">
+        <button class="mini" onclick={() => (confirmClear = false)} disabled={clearing}>取消</button>
+        <button class="mini danger" onclick={doClear} disabled={clearing}>
+          {clearing ? '清除中…' : '清除'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

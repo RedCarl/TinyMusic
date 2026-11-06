@@ -147,6 +147,12 @@
           onclick={() => go({ name: 'album', provider: track.provider, albumId: track.album_id, title: track.album })}
         >{track.album}</button>
       {/if}
+      {#if (track.hot ?? 0) > 0}
+        <span class="hot" title="热度（酷我搜索排名分）">
+          <HugeiconsIcon icon={icons.hot} size={11} />
+          {track.hot}
+        </span>
+      {/if}
     </div>
   </div>
 

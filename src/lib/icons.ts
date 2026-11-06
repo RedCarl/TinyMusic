@@ -48,6 +48,7 @@ import {
   Refresh01Icon,
   PencilEdit01Icon,
   DragDropVerticalIcon,
+  FireIcon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
@@ -91,6 +92,7 @@ export const icons = {
   refresh: Refresh01Icon,
   edit: PencilEdit01Icon,
   grip: DragDropVerticalIcon,
+  hot: FireIcon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */

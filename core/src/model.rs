@@ -98,6 +98,9 @@ pub struct Track {
     /// 便于 UI 直接展示的额外标记（如「Live」「合作」）
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// 搜索热度（酷我搜索返回的 SCORE100，0 表示未知）
+    #[serde(default)]
+    pub hot: u32,
 }
 
 impl Track {

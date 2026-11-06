@@ -145,7 +145,7 @@
       {/each}
     </nav>
     <button class="foot" class:on={activeNav === 'account'} onclick={() => go({ name: 'account' })}>
-      <HugeiconsIcon icon={icons.account} size={ICON_SIZE.inline} />
+      <span class="ico"><HugeiconsIcon icon={icons.account} size={ICON_SIZE.control} /></span>
       <span>账号</span>
     </button>
   </aside>
