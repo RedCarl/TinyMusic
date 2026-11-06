@@ -14,6 +14,9 @@
     next,
     prev,
     syncPlayback,
+    persistPlayback,
+    consumePendingSeek,
+    clearPendingSeek,
   } from './lib/player.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
   import DownloadDialog from './components/DownloadDialog.svelte';
@@ -116,7 +119,13 @@
           el.pause();
           break;
         case 'seek':
-          el.currentTime = value ?? 0;
+          // 恢复的上次记录还没取流时拖动进度：只更新 UI，等 play 时再落到 audio
+          if (!el.src) break;
+          try {
+            el.currentTime = value ?? 0;
+          } catch {
+            /* metadata 还没就绪时忽略 */
+          }
           break;
       }
     });
@@ -141,7 +150,23 @@
         /* 非 Tauri 环境（纯浏览器调试）忽略 */
       });
 
-    return () => unlisten?.();
+    const saveRecord = () => {
+      if (audio) player.progress = audio.currentTime;
+      persistPlayback(true);
+    };
+    const onVisibility = () => {
+      if (document.hidden) saveRecord();
+    };
+    window.addEventListener('pagehide', saveRecord);
+    window.addEventListener('beforeunload', saveRecord);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      unlisten?.();
+      window.removeEventListener('pagehide', saveRecord);
+      window.removeEventListener('beforeunload', saveRecord);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   });
 
   // 音量同步
@@ -223,7 +248,7 @@
     </div>
   </aside>
 
-  <main bind:this={mainEl}>
+  <main bind:this={mainEl} class:no-player={!player.current}>
     {#if bootErr}<div class="err">{bootErr}</div>{/if}
     {#if router.route.name === 'search'}
       <Search />
@@ -268,18 +293,46 @@
     ontimeupdate={(e) => {
       const a = e.currentTarget as HTMLAudioElement;
       player.progress = a.currentTime;
+      persistPlayback();
     }}
     onloadedmetadata={(e) => {
       const a = e.currentTarget as HTMLAudioElement;
-      if (isFinite(a.duration) && a.duration > 0) player.duration = a.duration;
+      const duration = isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
+      if (duration > 0) player.duration = duration;
+
+      // 恢复上次进度：等 metadata 就绪后再 seek，然后播放
+      const seekTo = consumePendingSeek();
+      if (seekTo != null) {
+        const target = duration > 0 ? Math.min(seekTo, Math.max(0, duration - 0.5)) : seekTo;
+        try {
+          a.currentTime = target;
+        } catch {
+          /* ignore */
+        }
+        player.progress = target;
+        a.play().catch((err) => {
+          player.error = '播放失败：' + String(err);
+          player.status = 'error';
+          player.playing = false;
+        });
+      }
+      persistPlayback(true);
     }}
-    onended={() => onEnded()}
+    onended={() => {
+      onEnded();
+      persistPlayback(true);
+    }}
     onerror={() => {
+      clearPendingSeek();
       if (player.src) player.error = '音频加载失败（直链可能已过期）';
       player.status = 'error';
       player.playing = false;
     }}
     onplay={() => syncPlayback('playing')}
-    onpause={() => syncPlayback('paused')}
+    onpause={(e) => {
+      player.progress = (e.currentTarget as HTMLAudioElement).currentTime;
+      syncPlayback('paused');
+      persistPlayback(true);
+    }}
   ></audio>
 </div>

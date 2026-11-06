@@ -7,12 +7,15 @@
   import BatchBar from '../components/BatchBar.svelte';
   import { openTracksMenu } from '../lib/trackMenu.svelte';
   import BackLink from '../components/BackLink.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import DetailPageSkeleton from '../components/DetailPageSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let route = $derived(router.route.name === 'album' ? router.route : null);
   let data = $state<AlbumPage | null>(null);
   let loading = $state(true);
   let err = $state('');
+
+  const skel = delayedVisible(() => loading);
 
   $effect(() => {
     const r = route;
@@ -30,7 +33,11 @@
 
 <div class="page">
   <BackLink />
-  {#if data}
+  {#if skel.visible}
+    <DetailPageSkeleton rows={10} />
+  {:else if loading}
+    <!-- 等骨架屏延迟 -->
+  {:else if data}
     <div class="head" role="group" oncontextmenu={(e) => openTracksMenu(e, data!.tracks)}>
       {#if data.cover}
         <img class="cover" src={coverUrl(data.cover, 500)} alt="" />
@@ -52,8 +59,6 @@
         <TrackRow track={t} index={i} queue={data.tracks} />
       {/each}
     </div>
-  {:else if loading}
-    <SkeletonList rows={10} />
   {:else if err}
     <div class="err">{err}</div>
   {/if}

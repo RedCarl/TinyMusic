@@ -7,12 +7,15 @@
   import BatchBar from '../components/BatchBar.svelte';
   import { openTracksMenu } from '../lib/trackMenu.svelte';
   import BackLink from '../components/BackLink.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import DetailPageSkeleton from '../components/DetailPageSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let route = $derived(router.route.name === 'playlist' ? router.route : null);
   let data = $state<PlaylistDetail | null>(null);
   let loading = $state(true);
   let err = $state('');
+
+  const skel = delayedVisible(() => loading);
 
   $effect(() => {
     const r = route;
@@ -54,8 +57,10 @@
 
 <div class="page">
   <BackLink />
-  {#if loading}
-    <SkeletonList rows={10} />
+  {#if skel.visible}
+    <DetailPageSkeleton rows={10} description />
+  {:else if loading}
+    <!-- 等骨架屏延迟 -->
   {:else if err}
     <div class="err">{err}</div>
     <div class="note">

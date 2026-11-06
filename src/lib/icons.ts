@@ -23,7 +23,9 @@ import {
   PauseIcon,
   PreviousIcon,
   NextIcon,
+  VolumeHighIcon,
   VolumeIcon,
+  VolumeLowIcon,
   VolumeOffIcon,
   ArrowLeft01Icon,
   FolderOpenIcon,
@@ -49,6 +51,7 @@ import {
   PencilEdit01Icon,
   DragDropVerticalIcon,
   FireIcon,
+  MoreHorizontalIcon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
@@ -66,6 +69,8 @@ export const icons = {
   previous: PreviousIcon,
   next: NextIcon,
   volume: VolumeIcon,
+  volumeLow: VolumeLowIcon,
+  volumeHigh: VolumeHighIcon,
   volumeOff: VolumeOffIcon,
   back: ArrowLeft01Icon,
   folder: FolderOpenIcon,
@@ -93,6 +98,7 @@ export const icons = {
   edit: PencilEdit01Icon,
   grip: DragDropVerticalIcon,
   hot: FireIcon,
+  more: MoreHorizontalIcon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */

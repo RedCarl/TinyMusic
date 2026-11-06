@@ -5,7 +5,8 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
   import { copyText, showToast } from '../lib/toast.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import DownloadsSkeleton from '../components/DownloadsSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let rows = $state<DownloadRow[]>([]);
   let loaded = $state(false);
@@ -13,6 +14,8 @@
   let timer: number | undefined;
   let confirmClear = $state(false);
   let clearing = $state(false);
+
+  const skel = delayedVisible(() => !loaded);
 
   async function refresh() {
     try {
@@ -119,8 +122,10 @@
 
   {#if err}<div class="err">{err}</div>{/if}
 
-  {#if !loaded}
-    <SkeletonList rows={6} />
+  {#if skel.visible}
+    <DownloadsSkeleton rows={6} />
+  {:else if !loaded}
+    <!-- 等骨架屏延迟 -->
   {:else if rows.length === 0}
     <div class="empty">
       <div class="big" aria-hidden="true">

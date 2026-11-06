@@ -3,23 +3,8 @@ import { api, type LyricLine, type Quality, type Track } from './api';
 /** 播放状态：播放按钮据此显示「播放 / 暂停 / 继续播放 / 加载中」 */
 export type PlayStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'ended' | 'error';
 
-/** 播放顺序 */
-export type PlayMode = 'order' | 'repeat_all' | 'repeat_one' | 'shuffle';
-
-export interface PlayModeMeta {
-  value: PlayMode;
-  label: string;
-  hint: string;
-  /** 与 icons.ts 中的键对应，组件里再映射成图标组件 */
-  iconKey: 'list' | 'repeat' | 'repeatOne' | 'shuffle';
-}
-
-export const PLAY_MODES: PlayModeMeta[] = [
-  { value: 'order', label: '顺序播放', hint: '按列表顺序播放，播完最后一首停止', iconKey: 'list' },
-  { value: 'repeat_all', label: '列表循环', hint: '播完最后一首后回到第一首', iconKey: 'repeat' },
-  { value: 'repeat_one', label: '单曲循环', hint: '一直重复当前这一首', iconKey: 'repeatOne' },
-  { value: 'shuffle', label: '随机播放', hint: '随机挑选下一首', iconKey: 'shuffle' },
-];
+/** 循环方式：不循环 / 列表循环 / 单曲循环 */
+export type RepeatMode = 'off' | 'all' | 'one';
 
 /** 音质选项（顺序即 UI 顺序） */
 export const QUALITY_OPTIONS: { value: Quality; label: string }[] = [
@@ -51,9 +36,19 @@ function writeLS(key: string, value: string) {
   }
 }
 
-function readMode(): PlayMode {
-  const v = readLS('play_mode');
-  return v === 'repeat_all' || v === 'repeat_one' || v === 'shuffle' ? v : 'order';
+function readShuffle(): boolean {
+  const v = readLS('shuffle');
+  if (v === '1' || v === '0') return v === '1';
+  return readLS('play_mode') === 'shuffle';
+}
+
+function readRepeat(): RepeatMode {
+  const v = readLS('repeat');
+  if (v === 'off' || v === 'all' || v === 'one') return v;
+  const old = readLS('play_mode');
+  if (old === 'repeat_all') return 'all';
+  if (old === 'repeat_one') return 'one';
+  return 'off';
 }
 
 /** 播放器全局状态（Svelte 5 runes） */
@@ -70,7 +65,10 @@ export const player = $state({
   volume: 1,
   quality: normalizeQuality(readLS('quality')) as Quality,
   error: '' as string,
-  mode: readMode() as PlayMode,
+  /** 随机播放（和循环相互独立，和 Apple Music 一致） */
+  shuffle: readShuffle(),
+  /** 循环方式 */
+  repeat: readRepeat() as RepeatMode,
   /** 播放列表弹窗是否展开 */
   queueOpen: false,
   /** 音量面板是否展开 */
@@ -106,6 +104,124 @@ function setStatus(s: PlayStatus) {
 function sameTrack(a: Track | null, b: Track | null): boolean {
   return !!a && !!b && a.provider === b.provider && a.id === b.id;
 }
+
+/** 上次播放位置：本地缓存，只用于「下次打开时恢复」，不会自动播放 */
+interface PlaybackRecordV1 {
+  v: 1;
+  current: Track;
+  queue: Track[];
+  index: number;
+  progress: number;
+  duration: number;
+  at: number;
+}
+
+const PLAYBACK_KEY = 'playback';
+const PLAYBACK_QUEUE_MAX = 500;
+let lastPersistAt = 0;
+/** 流加载完成后需要跳到的位置；由 App 在 loadedmetadata 里取走 */
+let pendingSeek: number | null = null;
+
+function isTrack(x: unknown): x is Track {
+  const t = x as Track;
+  return !!t && typeof t.provider === 'string' && typeof t.id === 'string' && typeof t.title === 'string';
+}
+
+function restorePlayback() {
+  try {
+    const raw = readLS(PLAYBACK_KEY);
+    if (!raw) return;
+    const rec = JSON.parse(raw) as Partial<PlaybackRecordV1>;
+    if (!rec || !isTrack(rec.current) || !Array.isArray(rec.queue)) return;
+
+    const current = rec.current;
+    const queue = rec.queue.filter(isTrack);
+    if (!queue.some((t) => sameTrack(t, current))) queue.unshift(current);
+    let index = typeof rec.index === 'number' ? rec.index : -1;
+    if (index < 0 || index >= queue.length || !sameTrack(queue[index], current)) {
+      index = queue.findIndex((t) => sameTrack(t, current));
+    }
+    if (index < 0) return;
+
+    const duration = Number(rec.duration) || queue[index].duration_sec || 0;
+    let progress = Math.max(0, Number(rec.progress) || 0);
+    // 上次关在结尾附近时，从 0 开始，避免一按播放就结束
+    if (duration > 0 && progress > duration - 2) progress = 0;
+    if (duration > 0) progress = Math.min(progress, duration);
+
+    player.queue = queue;
+    player.index = index;
+    player.current = queue[index];
+    player.duration = duration;
+    player.progress = progress;
+    player.src = '';
+    setStatus('paused');
+  } catch {
+    /* 记录损坏就当没有 */
+  }
+}
+
+/**
+ * 保存播放记录。默认节流 3 秒；pause / 切歌 / 页面隐藏时传 force。
+ * 只存当前曲目、队列、进度和时长，音量/音质/随机/循环各自已有持久化。
+ */
+export function persistPlayback(force = false) {
+  if (!player.current) return;
+  const now = Date.now();
+  if (!force && now - lastPersistAt < 2000) return;
+  lastPersistAt = now;
+
+  let queue = player.queue.length ? player.queue.slice() : [player.current];
+  let index = player.index;
+  if (index < 0 || index >= queue.length) {
+    index = queue.findIndex((t) => sameTrack(t, player.current));
+  }
+  if (index < 0) {
+    queue = [player.current];
+    index = 0;
+  }
+  if (queue.length > PLAYBACK_QUEUE_MAX) {
+    const start = Math.max(
+      0,
+      Math.min(index - Math.floor(PLAYBACK_QUEUE_MAX / 2), queue.length - PLAYBACK_QUEUE_MAX)
+    );
+    queue = queue.slice(start, start + PLAYBACK_QUEUE_MAX);
+    index -= start;
+  }
+
+  const rec: PlaybackRecordV1 = {
+    v: 1,
+    current: player.current,
+    queue,
+    index,
+    progress: player.progress,
+    duration: player.duration || player.current.duration_sec || 0,
+    at: now,
+  };
+  writeLS(PLAYBACK_KEY, JSON.stringify(rec));
+}
+
+export function clearPersistedPlayback() {
+  try {
+    localStorage.removeItem(PLAYBACK_KEY);
+    lastPersistAt = 0;
+  } catch {
+    /* ignore */
+  }
+}
+
+/** App 在 audio.loadedmetadata 里取走待恢复的进度，执行 seek + play */
+export function consumePendingSeek(): number | null {
+  const s = pendingSeek;
+  pendingSeek = null;
+  return s;
+}
+
+export function clearPendingSeek() {
+  pendingSeek = null;
+}
+
+restorePlayback();
 
 /** 由真实 <audio> 事件回写状态：不要在别处硬写 playing */
 export function syncPlayback(state: 'playing' | 'paused') {
@@ -148,9 +264,23 @@ export function playButtonLabel(): string {
   }
 }
 
-export function setMode(m: PlayMode) {
-  player.mode = m;
-  writeLS('play_mode', m);
+export function setShuffle(on: boolean) {
+  player.shuffle = on;
+  writeLS('shuffle', on ? '1' : '0');
+}
+
+export function toggleShuffle() {
+  setShuffle(!player.shuffle);
+}
+
+export function setRepeat(r: RepeatMode) {
+  player.repeat = r;
+  writeLS('repeat', r);
+}
+
+/** 循环按钮：不循环 → 列表循环 → 单曲循环 → 不循环 */
+export function cycleRepeat() {
+  setRepeat(player.repeat === 'off' ? 'all' : player.repeat === 'all' ? 'one' : 'off');
 }
 
 /** 切换音质：持久化 + 若正在播放则按新音质重新取流（保持进度） */
@@ -188,25 +318,32 @@ function markUnavailable(track: Track) {
   if (t) t.availability = 'unavailable';
 }
 
-/** 从队列第 i 首开始（内部函数，队列已就绪） */
-async function startAt(i: number) {
+/** 从队列第 i 首开始；fromSec > 0 用于恢复上次进度（等 metadata 后再 seek + play） */
+async function startAt(i: number, fromSec = 0) {
   const track = player.queue[i];
   if (!track) return;
   const token = ++playToken;
+  const resume = fromSec > 0;
   player.index = i;
   player.current = track;
   player.error = '';
-  player.progress = 0;
+  player.progress = resume ? fromSec : 0;
   player.duration = track.duration_sec || 0;
   player.src = '';
   setStatus('loading');
+  persistPlayback(true);
   void loadLyrics(track);
 
   try {
     const src = await api.playerOpen(track.provider, track.id, player.quality);
     if (token !== playToken) return; // 已经被更新的点击顶替
     player.src = src.url;
+    pendingSeek = resume ? fromSec : null;
     listener?.('load');
+    if (resume) {
+      // App 的 loadedmetadata 会取走 pendingSeek：先 seek 到上次位置，再播放
+      return;
+    }
     // load 后再 play，避免 WebView 上偶发的播放被忽略
     setTimeout(() => {
       if (token !== playToken) return;
@@ -215,6 +352,7 @@ async function startAt(i: number) {
     }, 30);
   } catch (e) {
     if (token !== playToken) return;
+    pendingSeek = null;
     const msg = String(e);
     player.error = msg.includes('unavailable')
       ? '这首曲目在各音质档位都没取到完整音频'
@@ -260,8 +398,8 @@ export function toggle() {
     return;
   }
   if (!player.src) {
-    // 出错后重试、或上次没取到直链：重新取流
-    void startAt(player.index >= 0 ? player.index : 0);
+    // 出错后重试、或恢复了上次记录还没取流：从当前进度继续
+    void startAt(player.index >= 0 ? player.index : 0, player.progress);
     return;
   }
   if (player.status === 'ended') {
@@ -275,6 +413,7 @@ export function toggle() {
 export function seek(sec: number) {
   listener?.('seek', sec);
   player.progress = sec;
+  persistPlayback();
 }
 
 export function setVolume(v: number) {
@@ -306,7 +445,7 @@ export function toggleMute() {
 function nextIndex(): number | null {
   const n = player.queue.length;
   if (!n) return null;
-  if (player.mode === 'shuffle') {
+  if (player.shuffle) {
     if (n === 1) return 0;
     let candidate = player.index;
     // 避免随机到当前这首（列表大于 1 时）
@@ -317,14 +456,14 @@ function nextIndex(): number | null {
   }
   const i = player.index + 1;
   if (i < n) return i;
-  return player.mode === 'repeat_all' ? 0 : null;
+  return player.repeat === 'all' ? 0 : null;
 }
 
 /** 手动下一首：总是有下一步（到头回到第一首） */
 export function next() {
   const n = player.queue.length;
   if (!n) return;
-  if (player.mode === 'shuffle') {
+  if (player.shuffle) {
     void startAt(nextIndex() ?? 0);
     return;
   }
@@ -334,16 +473,16 @@ export function next() {
 export function prev() {
   const n = player.queue.length;
   if (!n) return;
-  if (player.mode === 'shuffle') {
+  if (player.shuffle) {
     void startAt(nextIndex() ?? 0);
     return;
   }
   void startAt((player.index - 1 + n) % n);
 }
 
-/** 音频自然播放结束：单曲循环自己重开，其余按模式决定下一步 */
+/** 音频自然播放结束：单曲循环自己重开，其余按循环方式决定下一步 */
 export function onEnded() {
-  if (player.mode === 'repeat_one') {
+  if (player.repeat === 'one') {
     listener?.('seek', 0);
     player.progress = 0;
     listener?.('play');
@@ -378,6 +517,8 @@ export function removeAt(i: number) {
   if (removingCurrent) {
     const target = Math.min(i, player.queue.length - 1);
     void startAt(target);
+  } else {
+    persistPlayback(true);
   }
 }
 
@@ -392,6 +533,9 @@ export function clearQueue() {
   player.duration = 0;
   player.error = '';
   player.lyrics = [];
+  player.queueOpen = false;
+  player.volumeOpen = false;
+  clearPersistedPlayback();
   setStatus('idle');
 }
 
@@ -408,6 +552,7 @@ export function addToQueue(track: Track): boolean {
     return true;
   }
   player.queue.push(track);
+  persistPlayback();
   return true;
 }
 
@@ -427,6 +572,7 @@ export function playNext(track: Track) {
   }
   const at = Math.min(player.index + 1, player.queue.length);
   player.queue.splice(at, 0, track);
+  persistPlayback();
 }
 
 export function openQueue() {

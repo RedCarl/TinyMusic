@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { fmtDuration } from '../lib/api';
+  import { fmtDuration, isBlocked } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import {
     player,
@@ -17,15 +18,15 @@
     toggleQueue,
     toggleVolume,
     closeVolume,
-    toggleMute,
-    PLAY_MODES,
+    toggleShuffle,
+    cycleRepeat,
   } from '../lib/player.svelte';
   import { requestDownload, isPending } from '../lib/download.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
+  import { go } from '../lib/router.svelte';
   import QueuePanel from './QueuePanel.svelte';
 
   const pending = $derived(player.current ? isPending(player.current) : false);
-  const modeMeta = $derived(PLAY_MODES.find((m) => m.value === player.mode) ?? PLAY_MODES[0]);
 
   let scrubbing = $state(false);
   let scrubVal = $state(0);
@@ -34,6 +35,10 @@
     player.duration > 0
       ? Math.min(100, ((scrubbing ? scrubVal : player.progress) / player.duration) * 100)
       : 0
+  );
+
+  const repeatLabel = $derived(
+    player.repeat === 'one' ? '单曲循环' : player.repeat === 'all' ? '列表循环' : '不循环'
   );
 
   function onScrubInput(e: Event) {
@@ -54,43 +59,208 @@
     toggle();
   }
 
-  function downloadCurrent() {
-    if (player.current) void requestDownload([player.current]);
+  /** 播放器里的「…」菜单：歌词 / 下载 / 音质 / 详情入口都收在这里 */
+  function openMore(e: MouseEvent) {
+    const t = player.current;
+    if (!t) return;
+    const downloading = isPending(t);
+    openMenuAt(e.clientX, e.clientY, [
+      { label: '查看歌词', icon: icons.lyric, run: openLyrics },
+      {
+        label: downloading ? '正在下载…' : '下载当前曲目',
+        icon: icons.download,
+        disabled: downloading || isBlocked(t.availability),
+        run: () => void requestDownload([t]),
+      },
+      { sep: true },
+      ...QUALITY_OPTIONS.map((o) => ({
+        label: `音质 · ${o.label}`,
+        hint: player.quality === o.value ? '当前' : undefined,
+        run: () => void setQuality(o.value),
+      })),
+      { sep: true },
+      { label: '歌曲详情', icon: icons.disc, run: () => go({ name: 'track', track: t }) },
+      ...(t.album_id
+        ? [
+            {
+              label: '打开专辑',
+              icon: icons.disc,
+              run: () =>
+                go({ name: 'album', provider: t.provider, albumId: t.album_id, title: t.album }),
+            },
+          ]
+        : []),
+      ...(t.artist_id
+        ? [
+            {
+              label: '打开歌手',
+              icon: icons.account,
+              run: () =>
+                go({ name: 'artist', provider: t.provider, artistId: t.artist_id, title: t.artist }),
+            },
+          ]
+        : []),
+    ]);
   }
 
-  const volumeLabel = $derived(player.volume === 0 ? '取消静音' : '调节音量');
+  const volumeLabel = $derived(
+    player.volume === 0 ? '已静音' : `音量 ${Math.round(player.volume * 100)}%`
+  );
+  const volumeIcon = $derived(
+    player.volume === 0
+      ? icons.volumeOff
+      : player.volume <= 0.45
+        ? icons.volumeLow
+        : icons.volumeHigh
+  );
+
+  /** 音量滑杆展开时，鼠标短暂离开不要立刻收起 */
+  let volLeaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let volDragging = $state(false);
+
+  function cancelVolLeave() {
+    clearTimeout(volLeaveTimer);
+  }
+
+  function scheduleVolClose() {
+    if (volDragging) return;
+    cancelVolLeave();
+    volLeaveTimer = setTimeout(() => closeVolume(), 140);
+  }
+
+  let volTrack = $state<HTMLElement | null>(null);
+  let volStartX = 0;
+  let volMoved = false;
+
+  function setVolFromPointer(e: PointerEvent) {
+    if (!volTrack) return;
+    const r = volTrack.getBoundingClientRect();
+    // 左右各留 5px 给滑块圆点，拖到两端时不会被容器切掉
+    const pad = 5;
+    const usable = r.width - pad * 2;
+    if (usable <= 0) return;
+    setVolume(Math.max(0, Math.min(1, (e.clientX - r.left - pad) / usable)));
+  }
+
+  function volDown(e: PointerEvent) {
+    volDragging = true;
+    volMoved = false;
+    volStartX = e.clientX;
+    cancelVolLeave();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+
+  function volMove(e: PointerEvent) {
+    if (!volDragging) return;
+    // 必须真的拖动了才改音量，单纯按一下不会跳变
+    if (!volMoved && Math.abs(e.clientX - volStartX) < 2) return;
+    volMoved = true;
+    setVolFromPointer(e);
+  }
+
+  function volUp() {
+    volDragging = false;
+    if (!document.querySelector('.volctl:hover')) scheduleVolClose();
+  }
+
+  function volKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 0.1 : 0.05;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      setVolume(Math.max(0, player.volume - step));
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      setVolume(Math.min(1, player.volume + step));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setVolume(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setVolume(1);
+    }
+  }
 </script>
 
+{#if player.current}
 <QueuePanel />
 
-<div class="bar">
-  <div
-    class="left"
-    role="group"
-    oncontextmenu={(e) => {
-      if (!player.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      openMenuAt(e.clientX, e.clientY, [
-        { label: '查看歌词', icon: icons.lyric, run: openLyrics },
-        {
-          label: player.status === 'playing' ? '暂停' : '继续播放',
-          icon: player.status === 'playing' ? icons.pause : icons.play,
-          disabled: player.status === 'loading',
-          run: toggle,
-        },
-        { sep: true },
-        {
-          label: '下载当前曲目（含歌词与封面）',
-          icon: icons.download,
-          run: () => {
-            if (player.current) void requestDownload([player.current]);
-          },
-        },
-        { label: '下一首', icon: icons.next, run: next },
-      ]);
-    }}
-  >
+<div
+  class="bar"
+  role="group"
+  aria-label="播放器"
+  transition:fly={{ y: 96, duration: 280, opacity: 0 }}
+  oncontextmenu={(e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openMore(e);
+  }}
+>
+  <div class="transport">
+    <button
+      class="tb"
+      class:on={player.shuffle}
+      onclick={toggleShuffle}
+      title={player.shuffle ? '关闭随机播放' : '开启随机播放'}
+      aria-label="随机播放"
+      aria-pressed={player.shuffle}
+    >
+      <HugeiconsIcon icon={icons.shuffle} size={16} />
+    </button>
+
+    <button
+      class="tb"
+      onclick={prev}
+      disabled={!player.queue.length}
+      title="上一首"
+      aria-label="上一首"
+    >
+      <HugeiconsIcon icon={icons.previous} size={ICON_SIZE.control} />
+    </button>
+
+    <button
+      class="tb main"
+      onclick={onMain}
+      disabled={!player.current || player.status === 'loading'}
+      title={playButtonLabel()}
+      aria-label={playButtonLabel()}
+    >
+      {#if player.status === 'loading'}
+        <span class="spin"><HugeiconsIcon icon={icons.loading} size={22} /></span>
+      {:else if player.status === 'playing'}
+        <HugeiconsIcon icon={icons.pause} size={22} />
+      {:else}
+        <HugeiconsIcon icon={icons.play} size={22} />
+      {/if}
+    </button>
+
+    <button
+      class="tb"
+      onclick={next}
+      disabled={!player.queue.length}
+      title="下一首"
+      aria-label="下一首"
+    >
+      <HugeiconsIcon icon={icons.next} size={ICON_SIZE.control} />
+    </button>
+
+    <button
+      class="tb"
+      class:on={player.repeat !== 'off'}
+      onclick={cycleRepeat}
+      title={`循环：${repeatLabel}（点击切换）`}
+      aria-label={`循环方式：${repeatLabel}`}
+      aria-pressed={player.repeat !== 'off'}
+    >
+      {#key player.repeat}
+        <HugeiconsIcon
+          icon={player.repeat === 'one' ? icons.repeatOne : icons.repeat}
+          size={16}
+        />
+      {/key}
+    </button>
+  </div>
+
+  <div class="now" role="group" aria-label="当前播放">
     <button
       class="coverbtn"
       onclick={openLyrics}
@@ -105,12 +275,8 @@
           <HugeiconsIcon icon={icons.music} size={ICON_SIZE.control} />
         </span>
       {/if}
-      {#if player.current}
-        <span class="coverhint" aria-hidden="true">
-          <HugeiconsIcon icon={icons.lyric} size={ICON_SIZE.inline} />
-        </span>
-      {/if}
     </button>
+
     <div class="meta">
       <div class="t">{player.current?.title ?? '未在播放'}</div>
       <div class="a">
@@ -125,34 +291,8 @@
         {/if}
       </div>
     </div>
-  </div>
 
-  <div class="center">
-    <div class="ctrls">
-      <button class="c" onclick={prev} title="上一首" aria-label="上一首" disabled={!player.queue.length}>
-        <HugeiconsIcon icon={icons.previous} size={ICON_SIZE.control} />
-      </button>
-      <button
-        class="c main"
-        onclick={onMain}
-        disabled={!player.current || player.status === 'loading'}
-        title={playButtonLabel()}
-        aria-label={playButtonLabel()}
-      >
-        {#if player.status === 'loading'}
-          <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.control} /></span>
-        {:else if player.status === 'playing'}
-          <HugeiconsIcon icon={icons.pause} size={ICON_SIZE.control} />
-        {:else}
-          <HugeiconsIcon icon={icons.play} size={ICON_SIZE.control} />
-        {/if}
-      </button>
-      <button class="c" onclick={next} title="下一首" aria-label="下一首" disabled={!player.queue.length}>
-        <HugeiconsIcon icon={icons.next} size={ICON_SIZE.control} />
-      </button>
-    </div>
-    <div class="seek">
-      <span>{fmtDuration(scrubbing ? scrubVal : player.progress)}</span>
+    <div class="now-progress" class:scrubbing>
       <input
         type="range"
         min="0"
@@ -161,89 +301,84 @@
         oninput={onScrubInput}
         onchange={onScrubCommit}
         style="--p:{pct}%"
+        disabled={!player.current}
+        aria-label="播放进度"
+        aria-valuetext={`${fmtDuration(scrubbing ? scrubVal : player.progress)} / ${fmtDuration(player.duration)}`}
       />
-      <span>{fmtDuration(player.duration)}</span>
+      <span class="seek-tip">
+        {fmtDuration(scrubbing ? scrubVal : player.progress)} / {fmtDuration(player.duration)}
+      </span>
     </div>
   </div>
 
-  <div class="right">
-    <select
-      class="quality"
-      value={player.quality}
-      onchange={(e) => setQuality((e.target as HTMLSelectElement).value as never)}
-      title="播放音质"
-      aria-label="播放音质"
+  <div class="utils">
+    <button
+      class="ub"
+      onclick={openLyrics}
+      disabled={!player.current}
+      title="歌词"
+      aria-label="歌词"
     >
-      {#each QUALITY_OPTIONS as o (o.value)}
-        <option value={o.value}>{o.label}</option>
-      {/each}
-    </select>
+      <HugeiconsIcon icon={icons.lyric} size={ICON_SIZE.control} />
+    </button>
 
     <button
-      class="c qbtn"
+      class="ub queue"
       class:on={player.queueOpen}
       onclick={toggleQueue}
-      title={`播放列表（${modeMeta.label}）`}
+      title={`播放列表（${player.queue.length} 首）`}
       aria-label="播放列表"
+      aria-expanded={player.queueOpen}
     >
       <HugeiconsIcon icon={icons.playlist} size={ICON_SIZE.control} />
       {#if player.queue.length}<span class="count">{player.queue.length}</span>{/if}
     </button>
 
-    <button
-      class="c"
-      onclick={downloadCurrent}
-      disabled={!player.current || pending}
-      title={pending ? '正在下载…' : '下载当前曲目（含歌词与封面）'}
-      aria-label="下载当前曲目"
+    <div
+      class="volctl"
+      class:open={player.volumeOpen}
+      role="group"
+      aria-label="音量"
+      onmouseenter={cancelVolLeave}
+      onmouseleave={scheduleVolClose}
     >
-      {#if pending}
-        <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
-      {:else}
-        <HugeiconsIcon icon={icons.download} size={ICON_SIZE.inline} />
-      {/if}
-    </button>
-
-    <button
-      class="c volbtn"
-      class:on={player.volumeOpen}
-      onclick={toggleVolume}
-      title={volumeLabel}
-      aria-label={volumeLabel}
-      aria-expanded={player.volumeOpen}
-    >
-      <HugeiconsIcon
-        icon={player.volume === 0 ? icons.volumeOff : icons.volume}
-        size={ICON_SIZE.inline}
-      />
-    </button>
+      <div class="vol-slide">
+        <div
+          class="vol-track"
+          class:dragging={volDragging}
+          bind:this={volTrack}
+          role="slider"
+          tabindex={player.volumeOpen ? 0 : -1}
+          aria-label="音量"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={Math.round(player.volume * 100)}
+          aria-valuetext={`${Math.round(player.volume * 100)}%`}
+          onpointerdown={volDown}
+          onpointermove={volMove}
+          onpointerup={volUp}
+          onpointercancel={volUp}
+          onkeydown={volKey}
+        >
+          <span class="vol-rail">
+            <span class="vol-fill" style="width:{player.volume * 100}%"></span>
+            <span class="vol-thumb" style="left:{player.volume * 100}%"></span>
+          </span>
+        </div>
+      </div>
+      <button
+        class="ub volbtn"
+        class:on={player.volumeOpen}
+        onclick={toggleVolume}
+        title={volumeLabel}
+        aria-label={volumeLabel}
+        aria-expanded={player.volumeOpen}
+      >
+        {#key volumeIcon}
+          <HugeiconsIcon icon={volumeIcon} size={ICON_SIZE.control} />
+        {/key}
+      </button>
+    </div>
   </div>
 </div>
-
-{#if player.volumeOpen}
-  <div class="vol-mask" role="presentation" onclick={closeVolume}></div>
-  <div class="vol-panel" role="dialog" aria-label="音量">
-    <button
-      class="vol-mute"
-      onclick={toggleMute}
-      title={player.volume === 0 ? '取消静音' : '静音'}
-      aria-label={player.volume === 0 ? '取消静音' : '静音'}
-    >
-      <HugeiconsIcon
-        icon={player.volume === 0 ? icons.volumeOff : icons.volume}
-        size={ICON_SIZE.inline}
-      />
-    </button>
-    <input
-      type="range"
-      min="0"
-      max="1"
-      step="0.01"
-      value={player.volume}
-      style="--p:{Math.round(player.volume * 100)}%"
-      oninput={(e) => setVolume(Number((e.target as HTMLInputElement).value))}
-      aria-label="音量"
-    />
-    <span class="volval">{Math.round(player.volume * 100)}%</span>
-  </div>
 {/if}

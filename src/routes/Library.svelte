@@ -7,11 +7,14 @@
   import { go } from '../lib/router.svelte';
   import TrackRow from '../components/TrackRow.svelte';
   import BatchBar from '../components/BatchBar.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import TrackListSkeleton from '../components/TrackListSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let tracks = $state<Track[]>([]);
   let loading = $state(true);
   let err = $state('');
+
+  const skel = delayedVisible(() => appCfg.s3Enabled && loading);
 
   async function load(pull: boolean) {
     loading = true;
@@ -40,8 +43,10 @@
 <div class="page">
   {#if err}<div class="err">{err}</div>{/if}
 
-  {#if !appCfg.loaded || loading}
-    <SkeletonList rows={6} />
+  {#if skel.visible}
+    <TrackListSkeleton rows={6} toolbar="library" />
+  {:else if !appCfg.loaded || loading}
+    <!-- 等骨架屏延迟，避免快请求闪一下 -->
   {:else if !appCfg.s3Enabled}
     <div class="empty">
       <div class="big" aria-hidden="true">

@@ -1,12 +1,11 @@
 <script lang="ts">
+  import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { fmtDuration } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { openTrackMenu } from '../lib/trackMenu.svelte';
   import {
     player,
-    PLAY_MODES,
-    setMode,
     jumpTo,
     removeAt,
     clearQueue,
@@ -16,7 +15,12 @@
 
 {#if player.queueOpen}
   <div class="queue-mask" role="presentation" onclick={closeQueue}></div>
-  <div class="queue-panel" role="dialog" aria-label="播放列表">
+  <div
+    class="queue-panel"
+    role="dialog"
+    aria-label="播放列表"
+    transition:fly={{ y: 14, duration: 200, opacity: 0 }}
+  >
     <div class="qp-head">
       <span class="qp-title">播放列表 <em>{player.queue.length} 首</em></span>
       <div class="qp-actions">
@@ -35,21 +39,6 @@
       </div>
     </div>
 
-    <div class="qp-modes" role="group" aria-label="播放顺序">
-      {#each PLAY_MODES as m (m.value)}
-        <button
-          class="mode"
-          class:on={player.mode === m.value}
-          title={m.hint}
-          aria-label={m.label}
-          aria-pressed={player.mode === m.value}
-          onclick={() => setMode(m.value)}
-        >
-          <HugeiconsIcon icon={icons[m.iconKey]} size={ICON_SIZE.inline} />
-          <span>{m.label}</span>
-        </button>
-      {/each}
-    </div>
 
     {#if player.queue.length === 0}
       <div class="qp-empty">播放列表是空的 —— 在歌曲上点播放就会自动填充</div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { coverUrl, fmtDuration, type Quality } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -160,11 +161,18 @@
   }
 
   const SKELETON = [66, 84, 52, 78, 61, 88, 47];
+  const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<div class="lyrics-page" role="dialog" aria-modal="true" aria-label="歌词">
+<div
+  class="lyrics-page"
+  role="dialog"
+  aria-modal="true"
+  aria-label="歌词"
+  transition:fly={{ y: REDUCE_MOTION ? 0 : '100%', duration: REDUCE_MOTION ? 0 : 320, opacity: 1 }}
+>
   <div class="lyrics-bg" aria-hidden="true">
     {#if player.current?.cover}
       <img class="lyrics-bg-img" src={coverUrl(player.current.cover, 900)} alt="" />

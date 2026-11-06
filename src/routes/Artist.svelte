@@ -6,7 +6,8 @@
   import TrackRow from '../components/TrackRow.svelte';
   import { openAlbumMenu } from '../lib/trackMenu.svelte';
   import BackLink from '../components/BackLink.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import ArtistPageSkeleton from '../components/ArtistPageSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let route = $derived(router.route.name === 'artist' ? router.route : null);
   let data = $state<ArtistPage | null>(null);
@@ -15,6 +16,8 @@
   let tab = $state<'songs' | 'albums'>('songs');
   let bioOpen = $state(false);
   let picErr = $state(false);
+
+  const skel = delayedVisible(() => loading);
 
   $effect(() => {
     const r = route;
@@ -38,7 +41,11 @@
 
 <div class="page">
   <BackLink />
-  {#if data}
+  {#if skel.visible}
+    <ArtistPageSkeleton rows={8} />
+  {:else if loading}
+    <!-- 等骨架屏延迟 -->
+  {:else if data}
     <div class="artist-head">
       {#if data.pic && !picErr}
         <img
@@ -107,8 +114,6 @@
         {/each}
       </div>
     {/if}
-  {:else if loading}
-    <SkeletonList rows={8} />
   {:else if err}
     <div class="err">{err}</div>
   {/if}

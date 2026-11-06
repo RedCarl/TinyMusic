@@ -8,10 +8,14 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { copyText } from '../lib/toast.svelte';
   import BackLink from '../components/BackLink.svelte';
+  import PlaylistsSkeleton from '../components/PlaylistsSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let playlists = $state<PlaylistRef[]>([]);
   let plLoading = $state(true);
   let err = $state('');
+
+  const skel = delayedVisible(() => plLoading);
 
   let s3On = $state(false);
   let importPl = $state<PlaylistRef | null>(null);
@@ -119,8 +123,10 @@
   {/if}
 
   {#if account.uid}
-    {#if plLoading}
-      <div class="muted small">读取中…</div>
+    {#if skel.visible}
+      <PlaylistsSkeleton rows={6} withIcon={s3On} />
+    {:else if plLoading}
+      <!-- 等骨架屏延迟 -->
     {:else if playlists.length === 0}
       <div class="muted small">这个账号还没有歌单</div>
     {:else}

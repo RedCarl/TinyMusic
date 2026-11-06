@@ -8,14 +8,17 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
   import { copyText } from '../lib/toast.svelte';
-  import BackLink from '../components/BackLink.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let track = $derived(router.route.name === 'track' ? (router.route.track as Track) : null);
   let detail = $state<TrackDetail | null>(null);
-  let loading = $state(false);
+  let loading = $state(true);
   let err = $state('');
   let qualityMsg = $state('');
   let probing = $state(false);
+
+  const lyricsSkel = delayedVisible(() => loading);
+  const LYRIC_SK_WIDTHS = [58, 74, 46, 82, 64, 70, 52, 78];
 
   $effect(() => {
     const t = track;
@@ -130,18 +133,24 @@
     </div>
   </div>
 
-  {#if loading}
-    <div class="muted">加载歌词…</div>
-  {:else if err}
-    <div class="muted">歌词获取失败（详情接口易限流，不影响播放）：{err}</div>
-  {:else if detail && detail.lyrics.length}
-    <div class="lyrics">
-      {#each detail.lyrics as l}
-        <div class="ly">{l.text}</div>
+  {#if lyricsSkel.visible}
+    <div class="lyrics sk-lyrics" role="status" aria-label="加载歌词">
+      {#each LYRIC_SK_WIDTHS as w}
+        <span class="sk sk-lyric-line" style="width:{w}%"></span>
       {/each}
     </div>
-  {:else}
-    <div class="muted">暂无歌词</div>
+  {:else if !loading}
+    {#if err}
+      <div class="muted">歌词获取失败（详情接口易限流，不影响播放）：{err}</div>
+    {:else if detail && detail.lyrics.length}
+      <div class="lyrics">
+        {#each detail.lyrics as l}
+          <div class="ly">{l.text}</div>
+        {/each}
+      </div>
+    {:else}
+      <div class="muted">暂无歌词</div>
+    {/if}
   {/if}
 </div>
 {/if}

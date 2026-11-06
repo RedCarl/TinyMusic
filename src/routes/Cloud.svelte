@@ -7,7 +7,8 @@
   import { appCfg, refreshAppCfg } from '../lib/config.svelte';
   import { showToast } from '../lib/toast.svelte';
   import { player, playTrack, toggle } from '../lib/player.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import CloudSkeleton from '../components/CloudSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
 
   let lists = $state<S3PlaylistInfo[]>([]);
   let rows = $state<S3TrackRow[]>([]);
@@ -15,6 +16,9 @@
   let loading = $state(true);
   let detailLoading = $state(false);
   let err = $state('');
+
+  const listSkel = delayedVisible(() => loading && appCfg.s3Enabled && lists.length === 0);
+  const detailSkel = delayedVisible(() => detailLoading);
 
   type Dialog =
     | { kind: 'create' }
@@ -256,9 +260,9 @@
 
     {#if err}<div class="err">{err}</div>{/if}
 
-    {#if loading}
-      <SkeletonList rows={4} />
-    {:else if !appCfg.s3Enabled}
+    {#if listSkel.visible}
+      <CloudSkeleton mode="list" />
+    {:else if !appCfg.s3Enabled && !loading}
       <div class="empty">
         <div class="big" aria-hidden="true">
           <HugeiconsIcon icon={icons.cloud} size={ICON_SIZE.empty} />
@@ -266,14 +270,14 @@
         <p>网盘还没有启用</p>
         <button class="primary btn-ico" onclick={() => go({ name: 'settings' })}>去启用</button>
       </div>
-    {:else if lists.length === 0}
+    {:else if lists.length === 0 && !loading}
       <div class="empty">
         <div class="big" aria-hidden="true">
           <HugeiconsIcon icon={icons.cloud} size={ICON_SIZE.empty} />
         </div>
         <p>还没有歌单</p>
       </div>
-    {:else}
+    {:else if lists.length > 0}
       <div class="plrows">
         {#each lists as p, i (p.name)}
           <div
@@ -372,8 +376,10 @@
 
     {#if err}<div class="err">{err}</div>{/if}
 
-    {#if detailLoading}
-      <SkeletonList rows={6} />
+    {#if detailSkel.visible}
+      <CloudSkeleton mode="detail" rows={6} />
+    {:else if detailLoading}
+      <!-- 等骨架屏延迟 -->
     {:else if rows.length === 0}
       <div class="empty"><p>这个歌单还是空的</p></div>
     {:else}

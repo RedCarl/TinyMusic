@@ -7,7 +7,8 @@
   import TrackRow from '../components/TrackRow.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { openAlbumMenu } from '../lib/trackMenu.svelte';
-  import SkeletonList from '../components/SkeletonList.svelte';
+  import TrackListSkeleton from '../components/TrackListSkeleton.svelte';
+  import { delayedVisible } from '../lib/loading.svelte';
   import BatchBar from '../components/BatchBar.svelte';
   import {
     searchState,
@@ -128,6 +129,10 @@
   const totalPages = $derived(searchState.result ? Math.ceil(searchState.result.total / 30) : 0);
   const result = $derived(searchState.result);
   const loading = $derived(searchState.loading);
+  /** 首次搜索才显示骨架；快请求不会闪一下 */
+  const skel = delayedVisible(() => loading && !result);
+  /** 艺人专辑是第二段请求，也用同样的延迟规则 */
+  const albumsSkel = delayedVisible(() => albumsLoading);
 </script>
 
 <div class="page">
@@ -196,12 +201,10 @@
     <div class="err">{searchState.err}</div>
   {/if}
 
-  {#if loading && !result}
-    <SkeletonList rows={8} />
-  {/if}
-
-  {#if result}
-    {#if albumsLoading || searchState.albums.length > 0}
+  {#if skel.visible}
+    <TrackListSkeleton rows={8} toolbar="search" />
+  {:else if result}
+    {#if albumsSkel.visible || (!albumsLoading && searchState.albums.length > 0)}
       <div class="section-head">
         <span>{searchState.artistName} 的专辑</span>
         <button
@@ -218,14 +221,14 @@
         </button>
       </div>
       <div class="albumrow">
-        {#if albumsLoading}
+        {#if albumsSkel.visible}
           {#each Array(6) as _, i (i)}
             <div class="albumcard skc" aria-hidden="true">
               <span class="sk sk-album"></span>
               <span class="sk sk-line w1"></span>
             </div>
           {/each}
-        {:else}
+        {:else if !albumsLoading}
           {#each searchState.albums as a (a.id)}
           <button
             class="albumcard"
