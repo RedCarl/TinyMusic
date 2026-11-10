@@ -249,12 +249,27 @@ hide_to_tray()                                   // 收进托盘
 
 - macOS 用 Tauri 的 `titleBarStyle: "Overlay"`（`hiddenTitle` + 自定义红绿灯位置），
   红绿灯浮在侧边栏顶部；侧边栏顶部留 46px 并放了一个 `data-tauri-drag-region`
-  拖动条，整块区域可以拖动窗口。窗口能力里补了 `core:window:allow-start-dragging`
-- Windows 继续用系统原生标题栏（右上角最小化/最大化/关闭），不做自绘；
-  侧边栏顶部不加留白，内容从窗口顶部开始
-- 前端在 `main.ts` 里根据 UA + 是否存在 `__TAURI_INTERNALS__` 给 `<html>`
-  打上 `data-os` / `data-shell`，CSS 只对「macOS + Tauri」加 `--titlebar-inset`；
-  这个 inset 只给侧边栏拖动条和歌词页用，内容区不再重复叠加，浏览器里调试也不会多出空白
+  拖动条，整块区域可以拖动窗口
+- Windows 关掉原生边框（`src-tauri/tauri.windows.conf.json` 里 `decorations: false`
+  + `shadow: true`，保住 Win11 的圆角和外投影），顶部换成 42px 的自绘标题栏：
+  左边是品牌，整条 `data-tauri-drag-region="deep"` 都能拖动窗口、双击切换最大化，
+  右边是自绘的最小化 / 最大化 / 关闭（`WindowControls.svelte`）：46px 宽、占满标题栏高度、
+  贴着右上角，尺寸和位置都对齐系统标题栏，滑到屏幕角落也能直接点到关闭；
+  悬停一层淡底，关闭键悬停整块变红（`#c42b1c`）。按钮固定定位、
+  层级压过歌词页和弹窗，任何界面都能关窗口。
+  平台配置按 JSON Merge Patch 覆盖，`windows` 数组是整体替换而不是逐项合并，
+  所以这个文件把窗口尺寸也一起写全了 —— 改窗口大小时两处都要动
+- 自绘标题栏只在「Windows + Tauri」出现：`main.ts` 根据 UA 和
+  是否存在 `__TAURI_INTERNALS__` 给 `<html>` 打上 `data-os` / `data-shell` / `data-chrome`，
+  CSS 只对 `data-chrome="custom"` 换成两行网格（标题栏 + 侧边栏/内容），
+  同时收起侧边栏里那份品牌；`--titlebar-inset` 也同步给歌词页当顶部拖动条，
+  浏览器里调试既不画标题栏，也不会多出空白
+- 窗口能力里补了 `start-dragging` / `internal-toggle-maximize` / `minimize` /
+  `toggle-maximize` / `is-maximized` / `close`；最大化图标跟着窗口的 resize 事件走，
+  双击拖动条、Win+↑、贴边吸附都能正确切换到「还原」形状
+- Windows 的窗口圆角是 DWM 定的 8px，右侧内容框离窗口边正好 8px，所以内容框的圆角
+  也用 8px（`--panel-radius`），内外两条弧线才是平行的；用原来的 19px 时，
+  内容框在右下角会鼓出来一块，和窗口的圆角「打架」。macOS 保留原来的大圆角
 
 ## 加载骨架
 
@@ -300,6 +315,14 @@ hide_to_tray()                                   // 收进托盘
 
 搜索历史存在 `localStorage.search_history`（最多 20 条，最近在前），
 搜索栏下方以 chip 展示，可单条删除或清空。
+
+搜索结果顶部那排「艺人的专辑」是一条横向货架（`.shelf`）：不挂滚动条，
+两侧各一颗圆形翻页键，滚到哪一侧才在那侧做渐隐。渐隐用的是 `mask-image`
+而不是盖一层色块 —— 内容区的底是半透明玻璃，盖色永远对不上。
+点一次翻一整屏：卡片占位从 DOM 里量（两张卡的 `offsetLeft` 之差），
+屏幕上能放下几张就滚几张，配合 `scroll-snap` 停在整张卡上；
+滚到头那一侧的按钮和渐隐一起收起。触控板横滑、Tab 到按钮都照常可用，
+`smooth` 被禁时还有一次兜底跳转，按钮不会是死的。
 
 ## 艺人页
 
@@ -389,9 +412,15 @@ S3 客户端在 [`core/src/s3.rs`](core/src/s3.rs)，
 
 ## 滚动条
 
-Windows 的 WebView2 默认滚动条又宽又亮，和深色界面非常割裂。
-现在全局统一成 8px 细滚动条：透明轨道、圆角滑块、无上下箭头，
-同时写了 `scrollbar-width: thin` / `scrollbar-color`，Firefox 与新版 Chromium 也一致。
+Windows 的 WebView2 默认滚动条又宽又亮，两头的箭头小方块和深色界面非常割裂。
+现在全局统一成 8px 细滚动条：透明轨道、圆角滑块、两端没有箭头。
+
+**只写 `::-webkit-scrollbar`，不要写 `scrollbar-width` / `scrollbar-color`。**
+这两个标准属性一旦声明，Chromium 就切回系统滚动条绘制，上面那套自定义样式全部失效，
+Windows 上就会在滚动条两头露出小箭头 —— 「有箭头」正是这么来的。再显式把
+`::-webkit-scrollbar-button` 的尺寸置零，双保险。WebView2 和 Linux 的 WebKitGTK
+都认这套伪元素（项目不跑 Firefox）；歌词页那种要彻底藏掉滚动条的容器，
+额外写 `scrollbar-width: none` 也不会和它打架。
 
 ## 托盘与关闭行为
 
@@ -717,8 +746,9 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
 ## 外观主题
 
 设置 → 外观提供「跟随系统 / 浅色 / 深色」三档，默认跟随系统，选择存在 localStorage。
-切换会同时更新应用内配色和窗口标题栏（`set_window_theme`），系统主题变化时自动跟随。
-窗口标题栏在 macOS 上是 Overlay（默认浅色/深色由系统决定），Windows 上使用原生标题栏配色。
+切换会同时更新应用内配色和窗口外观（`set_window_theme`），系统主题变化时自动跟随。
+macOS 上是 Overlay 标题栏（红绿灯的深浅由系统决定）；Windows 上标题栏是应用自己画的，
+配色直接跟主题走，`set_window_theme` 只管系统那一层（边框、弹窗、原生控件）。
 
 ### 交互细节
 

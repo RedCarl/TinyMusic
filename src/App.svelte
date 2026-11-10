@@ -23,6 +23,8 @@
     clearPendingSeek,
   } from './lib/player.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
+  import TitleBar from './components/TitleBar.svelte';
+  import WindowControls from './components/WindowControls.svelte';
   import DownloadDialog from './components/DownloadDialog.svelte';
   import ContextMenu from './components/ContextMenu.svelte';
   import Toast from './components/Toast.svelte';
@@ -41,6 +43,9 @@
   import { appCfg, refreshAppCfg } from './lib/config.svelte';
   import { account } from './lib/account.svelte';
   import { showToast } from './lib/toast.svelte';
+
+  // 自绘标题栏只出现在 Windows + Tauri（见 main.ts 的 data-chrome）
+  const customChrome = document.documentElement.dataset.chrome === 'custom';
 
   let audio = $state<HTMLAudioElement | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
@@ -222,6 +227,9 @@
 <svelte:window onresize={measureNav} />
 
 <div class="app">
+  {#if customChrome}
+    <TitleBar />
+  {/if}
   <aside bind:this={asideEl}>
     <span
       class="nav-ind"
@@ -313,6 +321,11 @@
   <DownloadDialog />
   <ContextMenu />
   <Toast />
+
+  <!-- 窗口按钮浮在所有浮层之上：歌词页全屏盖住时也关得掉窗口 -->
+  {#if customChrome}
+    <WindowControls />
+  {/if}
 
   <!-- 隐藏的音频元素：真正的解码/播放器 -->
   <audio

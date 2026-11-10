@@ -28,6 +28,9 @@
   --r-sm: calc(var(--radius) * 0.6); /* 8px 小件 */
   --r: var(--r-md); /* 兼容旧名 */
 
+  /* 右侧内容区那块玻璃的圆角：默认跟卡片一样大，Windows 上改成跟窗口一致 */
+  --panel-radius: var(--r-xl);
+
   /* ---- 字体 ---- */
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC',
@@ -324,6 +327,12 @@
   --titlebar-inset: 46px;
 }
 
+/* Windows 的窗口圆角是 8px（DWM 按 DPI 缩放），内容框离窗口边正好 8px，
+   用同一个半径，内外两条弧线才是平行的；用 19px 会在右上角跟窗口的角打架。 */
+:root[data-os='windows'] {
+  --panel-radius: 8px;
+}
+
 /* ==========================================================================
    2. 基底
    ========================================================================== */
@@ -541,12 +550,10 @@ input[type='range']::-moz-range-thumb {
   box-shadow: var(--knob-shadow);
 }
 
-/* ---- 滚动条：细、无声，不抢材料 ---- */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--thumb) transparent;
-}
-
+/* ---- 滚动条：细、无声，不抢材料 ----
+   只走 ::-webkit-scrollbar（WebView2 / WebKit 都认这套）。**不要**再写
+   scrollbar-width / scrollbar-color：一旦声明，Chromium 就改画系统滚动条，
+   上面这些自定义样式全部失效，Windows 上还会在两头露出一对小箭头。 */
 *::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -566,6 +573,14 @@ input[type='range']::-moz-range-thumb {
 *::-webkit-scrollbar-thumb:hover {
   background: var(--thumb-hover);
   background-clip: padding-box;
+}
+
+/* 两端的箭头按钮：不画，也不占位置 */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
 }
 
 *::-webkit-scrollbar-corner {
@@ -729,11 +744,100 @@ aside {
   gap: 4px;
 }
 
-/* macOS Overlay 标题栏的拖动条；Windows 上高度为 0 */
+/* macOS Overlay 标题栏的拖动条；自绘标题栏的平台把这一行收掉（高度为 0） */
 .titlebar-drag {
   height: var(--titlebar-inset);
   flex: none;
   margin: 0 -10px;
+}
+
+/* ---- Windows 自绘标题栏 ----
+   原生边框关掉之后，窗口顶部由这一行撑开：左边是品牌，其余整条都能拖动窗口
+   （双击切换最大化）。右上角的按钮是固定定位的 .win-controls，
+   歌词页、弹窗浮上来之后它们仍然浮在最上面。 */
+:root[data-chrome='custom'] {
+  --titlebar-h: 42px;
+  /* 歌词页盖满整个窗口，顶部同样要留出这一条来拖动 */
+  --titlebar-inset: 42px;
+}
+
+:root[data-chrome='custom'] .app {
+  grid-template-rows: var(--titlebar-h) 1fr;
+  grid-template-areas:
+    'titlebar titlebar'
+    'side main';
+}
+
+/* 品牌已经搬到标题栏，侧边栏不再重复一次；导航项直接顶到标题栏下面 */
+:root[data-chrome='custom'] aside .brand,
+:root[data-chrome='custom'] aside .titlebar-drag {
+  display: none;
+}
+
+:root[data-chrome='custom'] aside {
+  padding-top: 4px;
+}
+
+.titlebar {
+  grid-area: titlebar;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0 10px 0 18px;
+}
+
+/* 标题栏里这份品牌去掉侧边栏那份的上下留白，靠 flex 居中 */
+.titlebar .brand {
+  padding: 0;
+}
+
+/* 窗口按钮：46 × 整条标题栏，贴住右上角 —— 和系统标题栏同尺寸、同位置，
+   鼠标滑到最角落也能直接点到关闭，不用瞄。 */
+.win-controls {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 120;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: stretch;
+}
+
+.wc {
+  width: 46px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  color: var(--fg2);
+}
+
+.wc svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wc:hover:not(:disabled) {
+  background-color: var(--hover);
+  color: var(--fg);
+}
+
+.wc:active:not(:disabled) {
+  background-color: var(--glass-state-armed);
+}
+
+/* 关闭是唯一带颜色的那颗：悬停整块变红、白叉，和系统窗口按钮的肌肉记忆一致 */
+.wc.close:hover {
+  background-color: #c42b1c;
+  color: oklch(1 0 0);
+}
+
+.wc.close:active {
+  background-color: #a8281b;
+  color: oklch(1 0 0);
 }
 
 .brand {
@@ -889,7 +993,7 @@ aside nav button.on .ico {
 main {
   grid-area: main;
   margin: 8px;
-  border-radius: var(--r-xl);
+  border-radius: var(--panel-radius);
   background-color: var(--panel);
   background-clip: padding-box;
   box-shadow:
@@ -1777,19 +1881,97 @@ button.primary {
   font-size: 11px;
 }
 
-/* ---------- 专辑横向卡片 ---------- */
+/* ---------- 专辑横向卡片：一排「幻灯片」 ----------
+   不挂滚动条：翻页交给两侧的圆形按钮，指针/触控板照样能滚。
+   两侧的渐隐用 mask 而不是盖一层色块 —— 底色是半透明玻璃，盖色永远对不上。 */
+.shelf {
+  position: relative;
+}
+
 .albumrow {
   display: flex;
   gap: 12px;
   padding: 2px 2px 12px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  --fade-l: 0px;
+  --fade-r: 0px;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 var(--fade-l),
+    #000 calc(100% - var(--fade-r)),
+    transparent 100%
+  );
+}
+
+.albumrow::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 只有还能往那边翻，才把那一侧的边缘化开 */
+.shelf.can-prev .albumrow {
+  --fade-l: 56px;
+}
+
+.shelf.can-next .albumrow {
+  --fade-r: 56px;
+}
+
+/* 翻页键：一小块墨，压在封面边缘上，任何封面上都看得清 */
+.shelf-nav {
+  position: absolute;
+  top: 68px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-fg);
+  background-color: color-mix(in oklch, var(--ink) var(--ink-solid), transparent);
+  background-clip: padding-box;
+  box-shadow: var(--ink-shadow);
+  -webkit-backdrop-filter: var(--glass-blur-control);
+  backdrop-filter: var(--glass-blur-control);
+  transition:
+    background-color 140ms ease-out,
+    transform 120ms ease-out;
+}
+
+.shelf-nav.prev {
+  left: 2px;
+}
+
+.shelf-nav.next {
+  right: 2px;
+}
+
+.shelf-nav:hover {
+  background-color: color-mix(in oklch, var(--ink) calc(var(--ink-solid) - 10%), transparent);
+}
+
+.shelf-nav:active {
+  transform: translateY(-50%) scale(0.94);
 }
 
 .albumcard {
   flex: 0 0 auto;
   width: 132px;
   text-align: left;
+  scroll-snap-align: start;
 }
 
 .albumcard img,

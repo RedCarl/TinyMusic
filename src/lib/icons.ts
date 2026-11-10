@@ -28,6 +28,7 @@ import {
   VolumeLowIcon,
   VolumeOffIcon,
   ArrowLeft01Icon,
+  ArrowRight01Icon,
   FolderOpenIcon,
   Playlist01Icon,
   UserAccountIcon,
@@ -74,6 +75,8 @@ export const icons = {
   volumeHigh: VolumeHighIcon,
   volumeOff: VolumeOffIcon,
   back: ArrowLeft01Icon,
+  /** 向前：横向货架翻页、详情页的下一步 */
+  forward: ArrowRight01Icon,
   folder: FolderOpenIcon,
   playlist: Playlist01Icon,
   account: UserAccountIcon,

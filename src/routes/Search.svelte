@@ -63,6 +63,14 @@
 
   let albumsLoading = $state(false);
 
+  // ---- 横向专辑货架：两侧按钮翻页，滚到哪一侧才在那侧淡出 ----
+  let shelfEl = $state<HTMLDivElement | null>(null);
+  let canPrev = $state(false);
+  let canNext = $state(false);
+
+  /** 卡片占位的兜底值（132 宽 + 12 间距）；能直接从 DOM 量出来就不用它 */
+  const ALBUM_SLOT = 144;
+
   async function loadArtist(items: Track[]) {
     searchState.artistName = '';
     searchState.artistId = '';
@@ -125,6 +133,59 @@
   function openAlbum(a: AlbumRef) {
     go({ name: 'album', provider: 'kuwo', albumId: a.id, title: a.name });
   }
+
+  /** 量一下还有没有没滚到的卡片，决定两侧按钮和渐隐出不出现 */
+  function syncShelf() {
+    const el = shelfEl;
+    if (!el) {
+      canPrev = false;
+      canNext = false;
+      return;
+    }
+    canPrev = el.scrollLeft > 4;
+    canNext = el.scrollLeft + el.clientWidth < el.scrollWidth - 4;
+  }
+
+  /** 一张卡片的占位：量两张卡的间距，改卡片尺寸时不用回来改这里 */
+  function shelfSlot(el: HTMLElement): number {
+    const cards = el.querySelectorAll<HTMLElement>('.albumcard');
+    if (cards.length >= 2) return cards[1].offsetLeft - cards[0].offsetLeft;
+    return ALBUM_SLOT;
+  }
+
+  /** 翻一整屏：屏幕上能放下几张就滚几张，停在整张卡上 */
+  function pageShelf(dir: -1 | 1) {
+    const el = shelfEl;
+    if (!el) return;
+    const slot = shelfSlot(el);
+    const perPage = Math.max(1, Math.floor(el.clientWidth / slot));
+    const step = dir * perPage * slot;
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const before = el.scrollLeft;
+    el.scrollBy({ left: step, behavior: reduce ? 'auto' : 'smooth' });
+    if (reduce) return;
+    // 极少数环境会忽略 smooth（动画被禁用 / 合成器卡住）：兜底直接跳过去，按钮不能是死的
+    setTimeout(() => {
+      if (Math.abs(el.scrollLeft - before) < 1) el.scrollLeft = before + step;
+    }, 450);
+  }
+
+  $effect(() => {
+    const el = shelfEl;
+    // 骨架换成真专辑、或者换了一批搜索结果，都要重新量一次
+    searchState.albums.length;
+    albumsLoading;
+    if (!el) return;
+    const ro = new ResizeObserver(() => syncShelf());
+    ro.observe(el);
+    el.addEventListener('scroll', syncShelf, { passive: true });
+    const raf = requestAnimationFrame(syncShelf);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      el.removeEventListener('scroll', syncShelf);
+    };
+  });
 
   const totalPages = $derived(searchState.result ? Math.ceil(searchState.result.total / 30) : 0);
   const result = $derived(searchState.result);
@@ -220,31 +281,55 @@
           查看艺人
         </button>
       </div>
-      <div class="albumrow">
-        {#if albumsSkel.visible}
-          {#each Array(6) as _, i (i)}
-            <div class="albumcard skc" aria-hidden="true">
-              <span class="sk sk-album"></span>
-              <span class="sk sk-line w1"></span>
-            </div>
-          {/each}
-        {:else if !albumsLoading}
-          {#each searchState.albums as a (a.id)}
-          <button
-            class="albumcard"
-            onclick={() => openAlbum(a)}
-            oncontextmenu={(e) => openAlbumMenu(e, a)}
-          >
-            {#if a.cover}
-              <img src={coverUrl(a.cover, 300)} alt="" loading="lazy" />
-            {:else}
-              <div class="ph" aria-hidden="true">
-                <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
+      <div class="shelf" class:can-prev={canPrev} class:can-next={canNext}>
+        <div class="albumrow" bind:this={shelfEl}>
+          {#if albumsSkel.visible}
+            {#each Array(6) as _, i (i)}
+              <div class="albumcard skc" aria-hidden="true">
+                <span class="sk sk-album"></span>
+                <span class="sk sk-line w1"></span>
               </div>
-            {/if}
-              <div class="an">{a.name}</div>
-            </button>
-          {/each}
+            {/each}
+          {:else if !albumsLoading}
+            {#each searchState.albums as a (a.id)}
+              <button
+                class="albumcard"
+                onclick={() => openAlbum(a)}
+                oncontextmenu={(e) => openAlbumMenu(e, a)}
+              >
+                {#if a.cover}
+                  <img src={coverUrl(a.cover, 300)} alt="" loading="lazy" />
+                {:else}
+                  <div class="ph" aria-hidden="true">
+                    <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
+                  </div>
+                {/if}
+                <div class="an">{a.name}</div>
+              </button>
+            {/each}
+          {/if}
+        </div>
+
+        <!-- 两侧的翻页键：滚到头就收起来，那一侧的渐隐也跟着消失 -->
+        {#if canPrev}
+          <button
+            class="shelf-nav prev"
+            onclick={() => pageShelf(-1)}
+            title="上一排"
+            aria-label="向左翻一页专辑"
+          >
+            <HugeiconsIcon icon={icons.back} size={ICON_SIZE.inline} />
+          </button>
+        {/if}
+        {#if canNext}
+          <button
+            class="shelf-nav next"
+            onclick={() => pageShelf(1)}
+            title="下一排"
+            aria-label="向右翻一页专辑"
+          >
+            <HugeiconsIcon icon={icons.forward} size={ICON_SIZE.inline} />
+          </button>
         {/if}
       </div>
     {/if}

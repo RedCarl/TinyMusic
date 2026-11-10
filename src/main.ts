@@ -6,8 +6,9 @@ import { initTheme } from './lib/theme.svelte';
 /**
  * 窗口外观按系统分开处理：
  * - macOS：Tauri 用 Overlay 标题栏，红绿灯浮在侧边栏顶部，需要给内容留出 inset
- * - Windows：保留原生标题栏（右上角最小化/最大化/关闭），内容直接从窗口顶部开始
- * 浏览器里调试时按 web 处理，不留 macOS 的空白。
+ * - Windows：关掉原生边框，顶部换成应用自绘的标题栏（品牌 + 拖动区 + 右上角窗口按钮），
+ *   所以没有任何系统留白，标题栏那一行由布局自己撑出来
+ * 浏览器里调试时按 web 处理，既不画标题栏，也不留 macOS 的空白。
  */
 function detectShell(): { os: string; shell: 'tauri' | 'web' } {
   const tauri = '__TAURI_INTERNALS__' in window;
@@ -25,6 +26,9 @@ function detectShell(): { os: string; shell: 'tauri' | 'web' } {
 const { os, shell } = detectShell();
 document.documentElement.dataset.os = os;
 document.documentElement.dataset.shell = shell;
+// 只有 Windows + Tauri 才是自绘标题栏；macOS 留着系统红绿灯，浏览器里什么都没有
+document.documentElement.dataset.chrome =
+  shell === 'tauri' && os === 'windows' ? 'custom' : 'native';
 
 initTheme();
 
