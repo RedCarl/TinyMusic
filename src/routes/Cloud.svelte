@@ -6,7 +6,8 @@
   import { go } from '../lib/router.svelte';
   import { appCfg, refreshAppCfg } from '../lib/config.svelte';
   import { showToast } from '../lib/toast.svelte';
-  import { player, playTrack, toggle } from '../lib/player.svelte';
+  import { openMenuAt } from '../lib/contextmenu.svelte';
+  import { player, playTrack, playNext, toggle } from '../lib/player.svelte';
   import CloudSkeleton from '../components/CloudSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
 
@@ -225,6 +226,40 @@
     }
   }
 
+  function rowMenu(e: MouseEvent, r: S3TrackRow, i: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    openMenuAt(e.clientX, e.clientY, [
+      {
+        label: isPlaying(r.key) ? '暂停' : '播放',
+        icon: isPlaying(r.key) ? icons.pause : icons.play,
+        run: () => {
+          const idx = rows.findIndex((x) => x.key === r.key);
+          if (idx >= 0) playRow(idx);
+        },
+      },
+      {
+        label: '下一首播放',
+        icon: icons.next,
+        run: () => {
+          playNext(r.track);
+          showToast('已设为下一首');
+        },
+      },
+      ...(current && canManage(current)
+        ? [
+            { sep: true as const },
+            {
+              label: '删除这首歌',
+              icon: icons.trash,
+              danger: true,
+              run: () => deleteTrack(r),
+            },
+          ]
+        : []),
+    ]);
+  }
+
   async function deleteTrack(r: S3TrackRow) {
     try {
       await api.s3TrackDelete(r.key);
@@ -385,7 +420,12 @@
     {:else}
       <div class="s3list">
         {#each rows as r, i (r.key)}
-          <div class="s3row" class:on={player.current?.id === r.key}>
+          <div
+            class="s3row"
+            class:on={player.current?.id === r.key}
+            role="group"
+            oncontextmenu={(e) => rowMenu(e, r, i)}
+          >
             <span class="idx">{i + 1}</span>
             {#if r.track.cover}
               <img class="s3cover" src={r.track.cover} alt="" loading="lazy" />
@@ -395,7 +435,12 @@
               </span>
             {/if}
             <span class="s3meta">
-              <span class="s3title">{r.track.title || '未命名'}</span>
+              <span class="s3title">
+                {r.track.title || '未命名'}
+                {#if r.track.available_qualities?.includes('lossless')}
+                  <span class="badge sq">无损</span>
+                {/if}
+              </span>
               <span class="s3sub">{r.track.artist || '未知歌手'}</span>
             </span>
             <button

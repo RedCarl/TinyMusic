@@ -15,14 +15,15 @@
 
 pub mod crypt;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use crate::cache::TtlCache;
 use crate::error::{Error, Result};
 use crate::http::{HttpClient, ProbeInfo};
 use crate::kwjson;
 use crate::model::*;
+use crate::quality;
 use crate::text::clean;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,11 +58,16 @@ pub fn parse_singer_page(html: &str) -> SingerProfile {
     };
     let rest = &html[start..];
     // 对象是内联的，遇到 `}}` 就是结尾；给个上限防御异常页面
-    let end = rest.find("}}").map(|e| e + 2).unwrap_or(rest.len().min(120_000));
+    let end = rest
+        .find("}}")
+        .map(|e| e + 2)
+        .unwrap_or(rest.len().min(120_000));
     let obj = &rest[..end];
 
     let pick = |keys: &[&str]| -> Option<String> {
-        keys.iter().find_map(|k| js_field(obj, k)).filter(|s| !s.is_empty())
+        keys.iter()
+            .find_map(|k| js_field(obj, k))
+            .filter(|s| !s.is_empty())
     };
 
     let pic = pick(&["pic300", "pic120", "pic70"])
@@ -90,9 +96,16 @@ pub fn parse_singer_page(html: &str) -> SingerProfile {
         }
     }
 
-    let name = pick(&["name"]).map(|s| crate::text::clean(&s)).filter(|s| !s.is_empty());
+    let name = pick(&["name"])
+        .map(|s| crate::text::clean(&s))
+        .filter(|s| !s.is_empty());
 
-    SingerProfile { name, pic, bio, meta }
+    SingerProfile {
+        name,
+        pic,
+        bio,
+        meta,
+    }
 }
 
 /// 在 JS 对象字面量里取 `key:"value"` 的字符串值（处理 JS 转义）
@@ -117,7 +130,9 @@ fn js_field(obj: &str, key: &str) -> Option<String> {
                 return Some(out);
             }
             if c == '\\' {
-                let Some(n) = chars.get(i + 1).copied() else { break };
+                let Some(n) = chars.get(i + 1).copied() else {
+                    break;
+                };
                 match n {
                     'u' if i + 5 < chars.len() => {
                         let hex: String = chars[i + 2..i + 6].iter().collect();
@@ -157,6 +172,7 @@ pub struct KuwoProvider {
     search_cache: TtlCache<String, SearchPage>,
     detail_cache: TtlCache<String, TrackDetail>,
     resolve_cache: TtlCache<String, StreamInfo>,
+    quality_cache: TtlCache<String, TrackQualities>,
     profile_cache: TtlCache<String, SingerProfile>,
 }
 
@@ -176,7 +192,9 @@ impl KuwoProvider {
             http,
             search_cache: TtlCache::new(Duration::from_secs(600), 256),
             detail_cache: TtlCache::new(Duration::from_secs(6 * 3600), 256),
-            resolve_cache: TtlCache::new(Duration::from_secs(24 * 3600), 512),
+            // CDN 直链会提前失效，取链缓存不能放 24 小时
+            resolve_cache: TtlCache::new(Duration::from_secs(20 * 60), 512),
+            quality_cache: TtlCache::new(Duration::from_secs(10 * 60), 256),
             profile_cache: TtlCache::new(Duration::from_secs(24 * 3600), 128),
         }
     }
@@ -294,10 +312,7 @@ impl KuwoProvider {
     }
 
     pub fn map_playlist(v: &Value) -> PlaylistRef {
-        let id = first_nonempty(&[
-            kwjson::s(v, "playlistid"),
-            kwjson::s(v, "DC_TARGETID"),
-        ]);
+        let id = first_nonempty(&[kwjson::s(v, "playlistid"), kwjson::s(v, "DC_TARGETID")]);
         let cover = first_nonempty(&[kwjson::s(v, "hts_pic"), kwjson::s(v, "pic")]);
         let creator = kwjson::s(v, "nickname");
         let desc = clean(&kwjson::s(v, "intro"));
@@ -306,18 +321,41 @@ impl KuwoProvider {
             provider: "kuwo".into(),
             id,
             name: clean(&kwjson::s(v, "name")),
-            cover: if cover.is_empty() { None } else { Some(normalize_cdn(&cover)) },
+            cover: if cover.is_empty() {
+                None
+            } else {
+                Some(normalize_cdn(&cover))
+            },
             track_count: kwjson::u(v, "songnum"),
-            creator: if creator.is_empty() { None } else { Some(clean(&creator)) },
+            creator: if creator.is_empty() {
+                None
+            } else {
+                Some(clean(&creator))
+            },
             description: if desc.is_empty() { None } else { Some(desc) },
             play_count: kwjson::s(v, "playcnt").parse::<u64>().unwrap_or(0),
             tags: if tags.is_empty() { None } else { Some(tags) },
         }
     }
 
+    /// 从列表项的 `MINFO` / `N_MINFO` / `FORMATS` 提取音质能力。
+    fn quality_fields(v: &Value) -> (Vec<Quality>, bool) {
+        let minfo = kwjson::s(v, "MINFO");
+        let nminfo = kwjson::s(v, "N_MINFO");
+        let formats = kwjson::s(v, "FORMATS");
+        let mut available = quality::qualities_from_minfo(&minfo);
+        if available.is_empty() {
+            available = quality::qualities_from_formats(&formats);
+        }
+        let has_advanced =
+            quality::has_advanced_formats(&nminfo) || quality::has_advanced_formats(&formats);
+        (available, has_advanced)
+    }
+
     /// 歌单详情接口返回的曲目字段是小写命名，与搜索结果不同，单独映射
     pub fn map_playlist_track(v: &Value) -> Track {
         let pic = kwjson::s(v, "albumpic");
+        let (available_qualities, has_advanced) = Self::quality_fields(v);
         Track {
             provider: "kuwo".into(),
             id: kwjson::s(v, "id"),
@@ -327,7 +365,11 @@ impl KuwoProvider {
             album: clean(&kwjson::s(v, "album")),
             album_id: kwjson::s(v, "albumid"),
             duration_sec: kwjson::u(v, "duration"),
-            cover: if pic.is_empty() { None } else { Some(normalize_cdn(&pic)) },
+            cover: if pic.is_empty() {
+                None
+            } else {
+                Some(normalize_cdn(&pic))
+            },
             availability: if v.get("online").and_then(|x| x.as_u64()).unwrap_or(1) == 0 {
                 Availability::Unavailable
             } else if v.get("pay").and_then(|x| x.as_u64()).unwrap_or(0) as u32 == PAY_VIP_ONLY {
@@ -337,6 +379,8 @@ impl KuwoProvider {
             },
             subtitle: None,
             hot: 0,
+            available_qualities,
+            has_advanced,
         }
     }
 
@@ -355,9 +399,17 @@ impl KuwoProvider {
             provider: "kuwo".into(),
             id: pid.to_string(),
             name: clean(&kwjson::s(&v, "title")),
-            cover: if pic.is_empty() { None } else { Some(normalize_cdn(&pic)) },
+            cover: if pic.is_empty() {
+                None
+            } else {
+                Some(normalize_cdn(&pic))
+            },
             track_count: kwjson::u(&v, "total"),
-            creator: if uname.is_empty() { None } else { Some(clean(&uname)) },
+            creator: if uname.is_empty() {
+                None
+            } else {
+                Some(clean(&uname))
+            },
             description: if info.is_empty() { None } else { Some(info) },
             play_count: kwjson::s(&v, "playnum").parse::<u64>().unwrap_or(0),
             tags: if tag.is_empty() { None } else { Some(tag) },
@@ -382,15 +434,13 @@ impl KuwoProvider {
                 Some(clean(&st))
             }
         };
+        let (available_qualities, has_advanced) = Self::quality_fields(v);
         Track {
             provider: "kuwo".into(),
             id: kwjson::s(v, "DC_TARGETID"),
             title: clean(&title),
             artist: clean(&kwjson::s(v, "ARTIST")),
-            artist_id: first_nonempty(&[
-                kwjson::s(v, "ARTISTID"),
-                kwjson::s(v, "allartistid"),
-            ]),
+            artist_id: first_nonempty(&[kwjson::s(v, "ARTISTID"), kwjson::s(v, "allartistid")]),
             album: clean(&kwjson::s(v, "ALBUM")),
             album_id: kwjson::s(v, "ALBUMID"),
             duration_sec: kwjson::u(v, "DURATION"),
@@ -402,6 +452,8 @@ impl KuwoProvider {
             availability: probe_availability_hint(v),
             subtitle,
             hot: kwjson::u(v, "SCORE100"),
+            available_qualities,
+            has_advanced,
         }
     }
 
@@ -493,16 +545,12 @@ impl KuwoProvider {
 
     /// 占位文件判定。三级，任一命中即视为不可用。
     pub fn is_placeholder(url: &str, probe: &ProbeInfo, meta_dur: u32, kbps: u32) -> bool {
-        if url.contains(PLACEHOLDER_PATH_ID) {
-            return true;
-        }
-        if probe.bytes == Some(PLACEHOLDER_BYTES) {
+        if url.contains(PLACEHOLDER_PATH_ID) || probe.bytes == Some(PLACEHOLDER_BYTES) {
             return true;
         }
         if let Some(n) = probe.bytes {
             if meta_dur >= 30 && kbps > 0 {
                 let est_sec = (n as f64 * 8.0) / (kbps as f64 * 1000.0);
-                // 实际时长不足标称的 60% → 判定为片段
                 if est_sec * 100.0 < (meta_dur as f64) * 60.0 {
                     return true;
                 }
@@ -511,61 +559,101 @@ impl KuwoProvider {
         false
     }
 
-    /// 取链并按需降级
-    async fn resolve_with_fallback(&self, id: &str, want: Quality, meta_dur: u32) -> Result<StreamInfo> {
-        let mut q = Some(want);
+    /// 取链并按需降级：先 anti，再 trackmedia；实际档位以校验结果为准。
+    async fn resolve_with_fallback(&self, track: &Track, want: Quality) -> Result<StreamInfo> {
+        if want.is_advanced() {
+            return Err(Error::Unsupported(format!(
+                "{} 需要会员账号与加密音频解密，当前未接入",
+                want.label()
+            )));
+        }
+
+        let mut best: Option<StreamInfo> = None;
         let mut tried = Vec::new();
+        let mut q = Some(want);
+
         while let Some(cur) = q {
-            let key = format!("{}:{}", id, cur.as_str());
+            if let Some(b) = &best {
+                if b.quality.rank() >= cur.rank() {
+                    break;
+                }
+            }
+
+            let key = format!("{}:{}", track.id, cur.as_str());
             if let Some(hit) = self.resolve_cache.get(&key) {
                 if hit.availability == Availability::Available {
-                    return Ok(hit);
+                    if hit.quality.rank() >= want.rank() {
+                        return Ok(hit);
+                    }
+                    keep_best(&mut best, hit);
                 }
                 tried.push(cur);
                 q = cur.next_lower();
                 continue;
             }
 
-            let url = self.http.get_text(RESOLVE_HOST, &Self::resolve_url(id, cur.br())).await?;
-            let direct = match Self::parse_resolve(&url) {
-                Ok(u) => u,
-                Err(_) => {
-                    // 该档位没有可解析的直链，先试资源管理链路，再降级
-                    if let Ok(Some(info)) = self.resolve_trackmedia(id, cur).await {
-                        self.resolve_cache.put(key, info.clone());
-                        return Ok(info);
-                    }
-                    tried.push(cur);
-                    q = cur.next_lower();
-                    continue;
-                }
-            };
+            let mut got: Option<StreamInfo> = None;
 
-            let probe = self.http.probe(&direct).await.unwrap_or_default();
-            if Self::is_placeholder(&direct, &probe, meta_dur, cur.nominal_kbps()) {
-                // anti.s 给了占位文件，说明这个档位被账号策略挡住。
-                // 改走资源管理链路：服务端只校验请求合法性，与 VIP 状态无关。
-                if let Ok(Some(info)) = self.resolve_trackmedia(id, cur).await {
+            // 1) anti.s 轻量直连（128/320/FLAC；无损通常返回占位）
+            if let Some(br) = Self::br_for(cur) {
+                if let Ok(body) = self
+                    .http
+                    .get_text(RESOLVE_HOST, &Self::resolve_url(&track.id, br))
+                    .await
+                {
+                    if let Ok(direct) = Self::parse_resolve(&body) {
+                        if let Ok(info) = quality::verify_url(
+                            &self.http,
+                            &direct,
+                            track.duration_sec,
+                            cur,
+                            "anti",
+                        )
+                        .await
+                        {
+                            got = Some(info);
+                        }
+                    }
+                }
+            }
+
+            // 2) 资源管理链路（anti 占位/无直链时；也是无损的唯一来源）
+            if got
+                .as_ref()
+                .map(|i| i.quality.rank() < cur.rank())
+                .unwrap_or(true)
+            {
+                if let Ok(Some(info)) = self.resolve_trackmedia(track, cur).await {
+                    if got
+                        .as_ref()
+                        .map(|g| info.quality.rank() > g.quality.rank())
+                        .unwrap_or(true)
+                    {
+                        got = Some(info);
+                    }
+                }
+            }
+
+            if let Some(mut info) = got {
+                info.requested = want;
+                info.degraded = info.quality.rank() < want.rank();
+                if info.quality.rank() >= want.rank() {
                     self.resolve_cache.put(key, info.clone());
                     return Ok(info);
                 }
+                keep_best(&mut best, info);
+            } else {
                 tried.push(cur);
-                q = cur.next_lower();
-                continue;
             }
 
-            let info = StreamInfo {
-                url: direct,
-                quality: cur,
-                bytes: probe.bytes,
-                content_type: if probe.content_type.is_empty() {
-                    "audio/mpeg".into()
-                } else {
-                    probe.content_type
-                },
-                availability: Availability::Available,
-            };
-            self.resolve_cache.put(key, info.clone());
+            q = cur.next_lower();
+        }
+
+        if let Some(mut info) = best {
+            info.requested = want;
+            info.degraded = info.quality.rank() < want.rank();
+            self.resolve_cache
+                .put(format!("{}:{}", track.id, want.as_str()), info.clone());
             return Ok(info);
         }
 
@@ -574,14 +662,43 @@ impl KuwoProvider {
     }
 }
 
+fn keep_best(best: &mut Option<StreamInfo>, info: StreamInfo) {
+    if best
+        .as_ref()
+        .map(|b| info.quality.rank() > b.quality.rank())
+        .unwrap_or(true)
+    {
+        *best = Some(info);
+    }
+}
+
 impl KuwoProvider {
-    /// 音质 → musicinfo 里的格式名
-    fn fmt_for(q: Quality) -> &'static str {
+    /// 音质 → musicinfo 里的格式名。高级档位当前没有可用的明文格式。
+    fn fmt_for(q: Quality) -> Option<&'static str> {
         match q {
-            Quality::Standard | Quality::High => "MP3128",
-            Quality::Super => "MP3H",
-            Quality::Lossless => "ALFLAC",
+            Quality::Standard => Some("MP3128"),
+            Quality::Super => Some("MP3H"),
+            Quality::Lossless => Some("ALFLAC"),
+            Quality::HiRes | Quality::Atmos | Quality::Master => None,
         }
+    }
+
+    /// 音质 → anti.s 的 br 参数。
+    fn br_for(q: Quality) -> Option<&'static str> {
+        match q {
+            Quality::Standard => Some("128kmp3"),
+            Quality::Super => Some("320kmp3"),
+            Quality::Lossless => Some("2000kflac"),
+            Quality::HiRes | Quality::Atmos | Quality::Master => None,
+        }
+    }
+
+    async fn musicinfo_text(&self, id: &str) -> Result<String> {
+        let raw = self
+            .http
+            .get_bytes(SEARCH_HOST, &Self::musicinfo_url(id))
+            .await?;
+        Self::parse_musicinfo_packet(&raw)
     }
 
     fn musicinfo_url(id: &str) -> String {
@@ -607,12 +724,21 @@ impl KuwoProvider {
     /// 从 musicinfo 文本里取某格式的 (S1, S2, SIZE)
     pub fn parse_sig(text: &str, fmt: &str) -> Option<(u32, u32, u64)> {
         for line in text.lines() {
-            let Some(rest) = line.strip_prefix(fmt) else { continue };
-            let Some(rest) = rest.strip_prefix("=S1:") else { continue };
+            let Some(rest) = line.strip_prefix(fmt) else {
+                continue;
+            };
+            let Some(rest) = rest.strip_prefix("=S1:") else {
+                continue;
+            };
             let mut it = rest.split('|');
             let s1 = it.next()?.trim().parse::<u32>().ok()?;
             let s2 = it.next()?.trim().strip_prefix("S2:")?.parse::<u32>().ok()?;
-            let size = it.next()?.trim().strip_prefix("SIZE:")?.parse::<u64>().ok()?;
+            let size = it
+                .next()?
+                .trim()
+                .strip_prefix("SIZE:")?
+                .parse::<u64>()
+                .ok()?;
             return Some((s1, s2, size));
         }
         None
@@ -668,29 +794,34 @@ impl KuwoProvider {
     ///
     /// 这条链路不依赖账号：服务端只校验请求是否合法、
     /// CDN 只校验 URL 里的 token/时间戳，与用户 VIP 状态无关。
-    pub async fn resolve_trackmedia(&self, id: &str, q: Quality) -> Result<Option<StreamInfo>> {
-        let fmt = Self::fmt_for(q);
+    /// 结果必须再经过 `quality::verify_url`，不能直接相信请求档位。
+    pub async fn resolve_trackmedia(
+        &self,
+        track: &Track,
+        q: Quality,
+    ) -> Result<Option<StreamInfo>> {
+        let Some(fmt) = Self::fmt_for(q) else {
+            return Ok(None);
+        };
 
-        let raw = self
-            .http
-            .get_bytes(SEARCH_HOST, &Self::musicinfo_url(id))
-            .await?;
-        let info = Self::parse_musicinfo_packet(&raw)?;
+        let info = self.musicinfo_text(&track.id).await?;
         let Some((s1, s2, size)) = Self::parse_sig(&info, fmt) else {
             return Ok(None); // 该曲目没有这个音质
         };
 
         let plain = Self::res_manage_plain(s1, s2);
         let cipher = crypt::encrypt(&plain);
-        // 请求体是「密文的 base64 文本」，不是原始二进制
         let body = BASE64.encode(&cipher).into_bytes();
         let resp = self
             .http
-            .post_bytes(RES_MANAGE_HOST, &format!("http://{}/yl_res_manage.search", RES_MANAGE_HOST),
-                        body, "application/octet-stream")
+            .post_bytes(
+                RES_MANAGE_HOST,
+                &format!("http://{}/yl_res_manage.search", RES_MANAGE_HOST),
+                body,
+                "application/octet-stream",
+            )
             .await?;
 
-        // 响应偶尔会夹带换行/控制字符，先只保留 base64 字符集再解码
         let text: String = String::from_utf8_lossy(&resp)
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
@@ -703,27 +834,21 @@ impl KuwoProvider {
         })?;
         let plain_resp = String::from_utf8_lossy(&crypt::decrypt(&cipher_resp)).to_string();
 
-        let (urls, file_len) = Self::parse_res_manage(&plain_resp);
+        let (urls, _file_len) = Self::parse_res_manage(&plain_resp);
         let Some(url) = urls.into_iter().next() else {
             return Ok(None);
         };
 
-        let probe = self.http.probe(&url).await.unwrap_or_default();
-        let bytes = probe.bytes.filter(|b| *b > 0).or(file_len).unwrap_or(size);
-        Ok(Some(StreamInfo {
-            url,
-            quality: q,
-            bytes: Some(bytes),
-            content_type: if probe.content_type.is_empty() {
-                match fmt {
-                    "ALFLAC" => "audio/flac".into(),
-                    _ => "audio/mpeg".into(),
+        match quality::verify_url(&self.http, &url, track.duration_sec, q, "trackmedia").await {
+            Ok(mut stream) => {
+                // musicinfo 报的 SIZE 只作为字节数兜底；以探测结果为准。
+                if stream.bytes.is_none() {
+                    stream.bytes = Some(size);
                 }
-            } else {
-                probe.content_type
-            },
-            availability: Availability::Available,
-        }))
+                Ok(Some(stream))
+            }
+            Err(_) => Ok(None),
+        }
     }
 
     /// 歌手资料（头像 / 简介 / 基本资料），带 24h 缓存
@@ -768,7 +893,6 @@ impl KuwoProvider {
     }
 }
 
-
 #[async_trait::async_trait]
 impl MusicProvider for KuwoProvider {
     fn id(&self) -> &'static str {
@@ -783,8 +907,8 @@ impl MusicProvider for KuwoProvider {
         ProviderInfo {
             id: "kuwo".into(),
             name: "酷我音乐".into(),
-            // 匿名档实测上限：128k
-            max_anonymous_quality: Quality::High,
+            // 当前匿名公开链路可播的三档；高级档位在 UI 里单独说明
+            qualities: vec![Quality::Standard, Quality::Super, Quality::Lossless],
         }
     }
 
@@ -802,9 +926,44 @@ impl MusicProvider for KuwoProvider {
         Ok(parsed)
     }
 
-    async fn resolve(&self, id: &str, q: Quality) -> Result<StreamInfo> {
-        // 元数据时长未知时传 0，此时只依赖 URL/大小判定
-        self.resolve_with_fallback(id, q, 0).await
+    async fn resolve(&self, track: &Track, q: Quality) -> Result<StreamInfo> {
+        self.resolve_with_fallback(track, q).await
+    }
+
+    async fn track_qualities(&self, track: &Track) -> Result<TrackQualities> {
+        if !track.available_qualities.is_empty() {
+            return Ok(TrackQualities {
+                available: track.available_qualities.clone(),
+                has_advanced: track.has_advanced,
+                known: true,
+            });
+        }
+        if let Some(hit) = self.quality_cache.get(&track.id) {
+            return Ok(hit);
+        }
+
+        let info = self.musicinfo_text(&track.id).await?;
+        let mut available = Vec::new();
+        if Self::parse_sig(&info, "MP3128").is_some() {
+            available.push(Quality::Standard);
+        }
+        if Self::parse_sig(&info, "MP3H").is_some() {
+            available.push(Quality::Super);
+        }
+        if Self::parse_sig(&info, "ALFLAC").is_some() {
+            available.push(Quality::Lossless);
+        }
+        let out = TrackQualities {
+            available,
+            has_advanced: quality::has_advanced_formats(&info) || track.has_advanced,
+            known: true,
+        };
+        self.quality_cache.put(track.id.clone(), out.clone());
+        Ok(out)
+    }
+
+    fn invalidate_resolve(&self, _id: &str) {
+        self.resolve_cache.clear();
     }
 
     async fn detail(&self, track: &Track) -> Result<TrackDetail> {
@@ -885,7 +1044,11 @@ impl MusicProvider for KuwoProvider {
         let first = tracks.first().cloned().unwrap_or_default();
         Ok(AlbumPage {
             album_id: album_id.to_string(),
-            name: if name.is_empty() { first.album.clone() } else { name.to_string() },
+            name: if name.is_empty() {
+                first.album.clone()
+            } else {
+                name.to_string()
+            },
             artist: first.artist,
             cover: first.cover,
             tracks,
@@ -970,7 +1133,10 @@ impl MusicProvider for KuwoProvider {
         } else {
             playlist.track_count
         };
-        Ok(PlaylistDetail { playlist, tracks: all })
+        Ok(PlaylistDetail {
+            playlist,
+            tracks: all,
+        })
     }
 
     fn features(&self) -> ProviderFeatures {
@@ -1075,7 +1241,6 @@ mod tests {
         assert!(p.meta.iter().any(|(k, v)| k == "地区" && v == "中国台湾"));
     }
 
-
     const SEARCH_FIXTURE: &str = include_str!("../../../tests/fixtures/search_daoxiang.json");
     const ESCAPED_FIXTURE: &str = include_str!("../../../tests/fixtures/search_escaped.json");
     const RESOLVE_OK: &str = include_str!("../../../tests/fixtures/resolve_ok.json");
@@ -1092,7 +1257,21 @@ mod tests {
         assert!(!t.title.is_empty());
         assert!(!t.artist.is_empty());
         assert!(t.duration_sec > 0);
-        assert!(t.cover.as_deref().unwrap_or("").starts_with("https://img1.kuwo.cn/star/albumcover/"));
+        assert!(t
+            .cover
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("https://img1.kuwo.cn/star/albumcover/"));
+        assert!(
+            page.items
+                .iter()
+                .any(|t| t.available_qualities.contains(&Quality::Lossless)),
+            "搜索列表应从 MINFO 解析出无损能力"
+        );
+        assert!(
+            page.items.iter().any(|t| t.has_advanced),
+            "应识别出加密高级格式"
+        );
     }
 
     #[test]
@@ -1122,27 +1301,57 @@ mod tests {
     #[test]
     fn detects_placeholder_by_url() {
         let u = KuwoProvider::parse_resolve(RESOLVE_PH).unwrap();
-        let probe = ProbeInfo { status: 200, bytes: Some(PLACEHOLDER_BYTES), content_type: "audio/mpeg".into() };
+        let probe = ProbeInfo {
+            status: 200,
+            bytes: Some(PLACEHOLDER_BYTES),
+            content_type: "audio/mpeg".into(),
+            head: Vec::new(),
+        };
         assert!(KuwoProvider::is_placeholder(&u, &probe, 223, 128));
     }
 
     #[test]
     fn detects_placeholder_by_size_even_without_url_id() {
-        let probe = ProbeInfo { status: 200, bytes: Some(PLACEHOLDER_BYTES), content_type: "audio/mpeg".into() };
-        assert!(KuwoProvider::is_placeholder("https://example.com/x.mp3", &probe, 200, 128));
+        let probe = ProbeInfo {
+            status: 200,
+            bytes: Some(PLACEHOLDER_BYTES),
+            content_type: "audio/mpeg".into(),
+            head: Vec::new(),
+        };
+        assert!(KuwoProvider::is_placeholder(
+            "https://example.com/x.mp3",
+            &probe,
+            200,
+            128
+        ));
     }
 
     #[test]
     fn detects_placeholder_by_duration_mismatch() {
-        let probe = ProbeInfo { status: 200, bytes: Some(400_000), content_type: "audio/mpeg".into() };
+        let probe = ProbeInfo {
+            status: 200,
+            bytes: Some(400_000),
+            content_type: "audio/mpeg".into(),
+            head: Vec::new(),
+        };
         // 400KB @128k ≈ 25s，标称 251s → 片段
-        assert!(KuwoProvider::is_placeholder("https://example.com/x.mp3", &probe, 251, 128));
+        assert!(KuwoProvider::is_placeholder(
+            "https://example.com/x.mp3",
+            &probe,
+            251,
+            128
+        ));
     }
 
     #[test]
     fn real_file_not_flagged() {
         // 3,182,050 字节 @128k ≈ 198s，标称 198s
-        let probe = ProbeInfo { status: 200, bytes: Some(3_182_050), content_type: "audio/mpeg".into() };
+        let probe = ProbeInfo {
+            status: 200,
+            bytes: Some(3_182_050),
+            content_type: "audio/mpeg".into(),
+            head: Vec::new(),
+        };
         assert!(!KuwoProvider::is_placeholder(
             "https://kw-bj.kuwo.cn/x/nf/resource/n2/25/44/97165461.mp3",
             &probe,
@@ -1191,11 +1400,18 @@ mod tests {
         assert!(t.duration_sec > 0);
         // 曲目是否可播应保持 Unknown（真正可用性要靠 resolve 探测）
         assert_eq!(t.availability, Availability::Unknown);
+        assert!(
+            d.tracks
+                .iter()
+                .any(|x| x.available_qualities.contains(&Quality::Lossless)),
+            "歌单里的 MINFO 也应解析出无损"
+        );
     }
 
     #[test]
     fn playlist_failure_is_reported() {
-        let r = KuwoProvider::parse_playlist_detail(r#"{"result":"fail","reason":"PARAM_ERROR"}"#, "1");
+        let r =
+            KuwoProvider::parse_playlist_detail(r#"{"result":"fail","reason":"PARAM_ERROR"}"#, "1");
         assert!(matches!(r, Err(Error::NotFound(_))));
     }
 
@@ -1225,8 +1441,11 @@ mod tests {
         // 关键：不支持时必须给出原因，UI 才能解释而不是放个假登录框
         for c in &caps {
             if !c.supported {
-                assert!(c.reason.as_deref().map(|r| !r.is_empty()).unwrap_or(false),
-                        "{:?} 声明为不支持但没给原因", c.method);
+                assert!(
+                    c.reason.as_deref().map(|r| !r.is_empty()).unwrap_or(false),
+                    "{:?} 声明为不支持但没给原因",
+                    c.method
+                );
             }
         }
     }
@@ -1235,7 +1454,11 @@ mod tests {
     fn vip_only_predicted_from_pay_without_extra_requests() {
         let page = KuwoProvider::parse_search(SEARCH_FIXTURE, 0, 3).unwrap();
         // fixture 里 440613(稻香原版) 的 PAY == 16711935
-        let vip = page.items.iter().find(|t| t.id == "440613").expect("fixture 应含稻香");
+        let vip = page
+            .items
+            .iter()
+            .find(|t| t.id == "440613")
+            .expect("fixture 应含稻香");
         assert_eq!(vip.availability, Availability::VipOnly);
 
         // 非会员曲不得被误判为 VipOnly
@@ -1253,10 +1476,11 @@ mod tests {
 
     #[test]
     fn quality_br_mapping() {
-        assert_eq!(Quality::High.br(), "128kmp3");
-        assert_eq!(Quality::Super.br(), "320kmp3");
-        assert_eq!(Quality::Lossless.br(), "2000kflac");
+        assert_eq!(Quality::Standard.nominal_kbps(), Some(128));
+        assert_eq!(Quality::Super.nominal_kbps(), Some(320));
+        assert_eq!(Quality::Lossless.nominal_kbps(), None);
         assert_eq!(Quality::Lossless.next_lower(), Some(Quality::Super));
         assert_eq!(Quality::Standard.next_lower(), None);
+        assert_eq!(Quality::HiRes.next_lower(), None);
     }
 }

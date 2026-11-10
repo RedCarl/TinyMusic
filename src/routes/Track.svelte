@@ -1,6 +1,18 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { api, coverUrl, fmtDuration, isBlocked, type Track, type TrackDetail } from '../lib/api';
+  import {
+    api,
+    coverUrl,
+    fmtDuration,
+    formatLabel,
+    isBlocked,
+    qualityLabel,
+    type Quality,
+    type QualityCapability,
+    type Track,
+    type TrackDetail,
+    type TrackQualities,
+  } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { playTrack } from '../lib/player.svelte';
   import { go } from '../lib/router.svelte';
@@ -9,6 +21,8 @@
   import { requestDownload } from '../lib/download.svelte';
   import { copyText } from '../lib/toast.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
+  import { qualityChoices } from '../lib/quality';
+  import { player } from '../lib/player.svelte';
 
   let track = $derived(router.route.name === 'track' ? (router.route.track as Track) : null);
   let detail = $state<TrackDetail | null>(null);
@@ -16,6 +30,10 @@
   let err = $state('');
   let qualityMsg = $state('');
   let probing = $state(false);
+  let caps = $state<QualityCapability[]>([]);
+  let availability = $state<TrackQualities | null>(null);
+
+  const choices = $derived(qualityChoices(track, caps, availability, player.quality));
 
   const lyricsSkel = delayedVisible(() => loading);
   const LYRIC_SK_WIDTHS = [58, 74, 46, 82, 64, 70, 52, 78];
@@ -25,12 +43,34 @@
     if (!t) return;
     detail = null;
     err = '';
+    qualityMsg = '';
+    availability = null;
     loading = true;
     api
       .detail(t.provider, t)
       .then((d) => (detail = d))
       .catch((e) => (err = String(e)))
       .finally(() => (loading = false));
+
+    api.qualityCapabilities().then((v) => (caps = v)).catch(() => {});
+    const fromTrack = t.available_qualities ?? [];
+    if (fromTrack.length) {
+      availability = {
+        available: fromTrack,
+        has_advanced: !!t.has_advanced,
+        known: true,
+      };
+    }
+    api
+      .trackQualities(t)
+      .then((q) => (availability = q))
+      .catch(() => {
+        availability = {
+          available: fromTrack,
+          has_advanced: !!t.has_advanced,
+          known: fromTrack.length > 0,
+        };
+      });
   });
 
   function coverMenu(e: MouseEvent) {
@@ -41,7 +81,7 @@
       {
         label: '下载这首歌（含歌词与封面）',
         icon: icons.download,
-        disabled: isBlocked(track.availability),
+        disabled: isBlocked(track.availability) || track.provider === 's3',
         run: () => requestDownload([track as Track]),
       },
       { sep: true },
@@ -53,17 +93,19 @@
     ]);
   }
 
-  async function probe(q: 'high' | 'super') {
+  async function probe(q: Quality) {
     if (!track) return;
     probing = true;
     qualityMsg = '';
     try {
-      const r = await api.resolve(track.provider, track.id, q);
-      const label = { high: '128k', super: '320k' }[q];
-      qualityMsg = `✔ ${label} 可用（${r.bytes ? (r.bytes / 1048576).toFixed(1) + ' MB' : '大小未知'}）`;
-    } catch {
-      const label = { high: '128k', super: '320k' }[q];
-      qualityMsg = `✘ ${label} 不可用（服务端只下发试听片段或拒绝）`;
+      const r = await api.resolve(track, q);
+      const actual = formatLabel(r.format) || qualityLabel(r.quality);
+      const size = r.bytes ? (r.bytes / 1048576).toFixed(1) + ' MB' : '大小未知';
+      const degraded = r.degraded ? '（已降级）' : '';
+      const unverified = r.verified ? '' : '（未校验）';
+      qualityMsg = `✔ ${actual}${unverified}${degraded} · ${size} · ${r.via === 'trackmedia' ? '资源链路' : r.via === 'anti' ? '直连' : r.via}`;
+    } catch (e) {
+      qualityMsg = `✘ ${qualityLabel(q)} 不可用（${String(e)}）`;
     } finally {
       probing = false;
     }
@@ -112,8 +154,15 @@
           <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
           {isBlocked(track.availability) ? '不可播放' : '播放'}
         </button>
-        <button onclick={() => probe('high')} disabled={probing}>测 128k</button>
-        <button onclick={() => probe('super')} disabled={probing}>测 320k</button>
+        {#each choices as c (c.value)}
+          <button
+            class:on={c.current}
+            onclick={() => probe(c.value)}
+            disabled={probing || c.disabled}
+          >
+            测 {c.label}
+          </button>
+        {/each}
       </div>
       {#if qualityMsg}
         <div class="qmsg">{qualityMsg}</div>
@@ -122,12 +171,11 @@
         <div class="note">
           <strong>会员曲目</strong>
           这条信息来自搜索接口的 <code>PAY</code> 字段。本客户端会通过资源管理链路取直链，
-          未登录也能完整播放；上面的探测器可以直接验证每一档实际能拿到多少字节。
+          未登录也能完整播放；上面的探测器可以直接验证每一档实际能拿到什么格式。
         </div>
       {:else}
         <div class="note">
-          未登录状态下，酷我服务端对会员专享曲目只下发约 11 秒的占位片段。
-          客户端无法绕过——上面的探测器会直接告诉你哪一档真的能拿到整曲。
+          未登录状态下，酷我服务端对会员专享曲目可能只下发约 11 秒的占位片段。
         </div>
       {/if}
     </div>

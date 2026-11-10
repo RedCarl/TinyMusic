@@ -43,7 +43,7 @@ function markActive(track: Track, on: boolean) {
 }
 
 function currentQuality(): Quality {
-  return ((localStorage.getItem('quality') as Quality) || player.quality || 'high') as Quality;
+  return player.quality || 'super';
 }
 
 export function closeDownloadDialog(force = false) {

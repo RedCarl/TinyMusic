@@ -2,7 +2,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { Channel } from '@tauri-apps/api/core';
 
 export type Availability = 'unknown' | 'available' | 'preview_only' | 'vip_only' | 'unavailable';
-export type Quality = 'standard' | 'high' | 'super' | 'lossless';
+export type Quality =
+  | 'standard'
+  | 'super'
+  | 'lossless'
+  | 'hires'
+  | 'atmos'
+  | 'master';
 
 export interface Track {
   provider: string;
@@ -16,6 +22,43 @@ export interface Track {
   cover: string | null;
   availability: Availability;
   subtitle: string | null;
+  /** 列表接口 MINFO 解析出的可播档位；空表示未知 */
+  available_qualities?: Quality[];
+  /** 目录里存在加密高级音质（当前不可播） */
+  has_advanced?: boolean;
+}
+
+export type Codec = 'mp3' | 'aac' | 'flac' | 'alac' | 'ogg' | 'wav' | 'unknown';
+
+export interface AudioFormat {
+  codec: Codec;
+  bitrate_kbps: number | null;
+  sample_rate_hz: number | null;
+  bits_per_sample: number | null;
+  channels: number | null;
+  lossless: boolean;
+  verified: boolean;
+}
+
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  qualities: Quality[];
+}
+
+export interface QualityCapability {
+  value: Quality;
+  label: string;
+  kbps: number | null;
+  lossless: boolean;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface TrackQualities {
+  available: Quality[];
+  has_advanced: boolean;
+  known: boolean;
 }
 
 export interface SearchPage {
@@ -61,16 +104,16 @@ export interface AlbumPage {
   tracks: Track[];
 }
 
-export interface ProviderInfo {
-  id: string;
-  name: string;
-  max_anonymous_quality: Quality;
-}
-
 export interface PlayerSource {
   url: string;
+  /** 实际档位；网盘文件为 original */
   quality: string;
+  requested_quality: string;
+  format: AudioFormat;
   bytes: number | null;
+  degraded: boolean;
+  verified: boolean;
+  via: string;
 }
 
 export interface DownloadRow {
@@ -89,6 +132,7 @@ export interface DownloadRow {
 export interface Settings {
   download_dir: string;
   default_quality: Quality;
+  settings_version: number;
   concurrency: number;
   // ---- 网盘（S3 兼容） ----
   s3_enabled: boolean;
@@ -176,11 +220,25 @@ export const api = {
   search: (provider: string, kw: string, page = 0, limit = 30) =>
     invoke<SearchPage>('search', { provider, kw, page, limit }),
 
-  resolve: (provider: string, id: string, quality: Quality) =>
-    invoke<{ url: string; quality: Quality; bytes: number | null; content_type: string; availability: Availability }>(
-      'resolve',
-      { provider, id, quality }
-    ),
+  resolve: (track: Track, quality: Quality) =>
+    invoke<{
+      url: string;
+      quality: Quality;
+      requested: Quality;
+      bytes: number | null;
+      content_type: string;
+      availability: Availability;
+      format: AudioFormat;
+      via: string;
+      degraded: boolean;
+      verified: boolean;
+    }>('resolve', { track, quality }),
+
+  qualityCapabilities: () => invoke<QualityCapability[]>('quality_capabilities'),
+
+  qualitySet: (quality: Quality) => invoke<string>('quality_set', { quality }),
+
+  trackQualities: (track: Track) => invoke<TrackQualities>('track_qualities', { track }),
 
   detail: (provider: string, track: Track) =>
     invoke<TrackDetail>('track_detail', { provider, track }),
@@ -191,8 +249,8 @@ export const api = {
   album: (provider: string, album_id: string, name: string, page = 0) =>
     invoke<AlbumPage>('album', { provider, albumId: album_id, name, page }),
 
-  playerOpen: (provider: string, id: string, quality: Quality) =>
-    invoke<PlayerSource>('player_open', { provider, id, quality }),
+  playerOpen: (track: Track, quality: Quality, forceRefresh = false) =>
+    invoke<PlayerSource>('player_open', { track, quality, forceRefresh }),
 
   downloadStart: (track: Track, quality: Quality, onProgress: (p: Progress) => void) => {
     const ch = new Channel<Progress>();
@@ -349,14 +407,30 @@ export function fmtBytes(n: number | null | undefined): string {
 
 /** 音质代码 → 中文，下载记录等处直接展示 */
 export const QUALITY_LABEL: Record<string, string> = {
-  standard: '标准',
-  high: '高品',
-  super: '超高',
-  lossless: '无损',
+  standard: '标准 128k',
+  high: '标准 128k', // 旧记录兼容
+  super: '高品质 320k',
+  lossless: '无损 FLAC',
+  hires: 'Hi-Res',
+  atmos: '杜比全景声',
+  master: '母带',
+  original: '原文件',
 };
 
 export function qualityLabel(q: string): string {
   return QUALITY_LABEL[q] ?? q;
+}
+
+/** 实际格式 → 界面短标签，例如 `FLAC 44.1kHz/16bit`、`MP3 320k` */
+export function formatLabel(f: AudioFormat | null | undefined): string {
+  if (!f || f.codec === 'unknown') return '';
+  const codec = f.codec.toUpperCase();
+  if (f.lossless) {
+    const hz = f.sample_rate_hz ? `${(f.sample_rate_hz / 1000).toFixed(1).replace('.0', '')}kHz` : '';
+    const bits = f.bits_per_sample ? `${f.bits_per_sample}bit` : '';
+    return [codec, hz, bits].filter(Boolean).join(' ');
+  }
+  return f.bitrate_kbps ? `${codec} ${f.bitrate_kbps}k` : codec;
 }
 
 export const AVAILABILITY_LABEL: Record<Availability, string> = {

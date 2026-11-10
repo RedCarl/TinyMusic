@@ -9,6 +9,7 @@
 
 use crate::error::Result;
 use crate::http::HttpClient;
+use crate::quality::normalize_content_type;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +23,8 @@ const MAX_HEADER: usize = 8192;
 
 struct Entry {
     url: String,
+    /// 以解码后的实际格式为准；CDN 的 `application/octet-stream` 不能直接给 <audio>。
+    content_type: Option<String>,
     expires: std::time::Instant,
 }
 
@@ -65,8 +68,11 @@ impl StreamProxy {
         format!("http://{}", self.addr)
     }
 
-    /// 登记一个直链，返回可供前端使用的 URL
-    pub async fn register(&self, url: String) -> String {
+    /// 登记一个直链，返回可供前端使用的 URL。
+    ///
+    /// `content_type` 由调用方传入校验后的 MIME（例如 `audio/flac`）；
+    /// 这比依赖 CDN 返回的头更可靠。
+    pub async fn register(&self, url: String, content_type: Option<String>) -> String {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -81,6 +87,7 @@ impl StreamProxy {
             token.clone(),
             Entry {
                 url,
+                content_type,
                 expires: now_i + TOKEN_TTL,
             },
         );
@@ -140,10 +147,12 @@ async fn handle(
         }
     };
 
-    let url = {
+    let (url, registered_type) = {
         let map = tokens.lock().await;
         match map.get(token) {
-            Some(e) if e.expires > std::time::Instant::now() => e.url.clone(),
+            Some(e) if e.expires > std::time::Instant::now() => {
+                (e.url.clone(), e.content_type.clone())
+            }
             _ => {
                 let _ = write_plain(&mut sock, 404, "token expired").await;
                 return Ok(());
@@ -161,12 +170,14 @@ async fn handle(
     };
 
     let status = upstream.status();
-    let ct = upstream
+    let upstream_ct = upstream
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("audio/mpeg")
-        .to_string();
+        .unwrap_or("audio/mpeg");
+    let ct = registered_type
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| normalize_content_type(upstream_ct));
     let len = upstream
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)

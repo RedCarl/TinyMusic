@@ -122,7 +122,12 @@
                 {/if}
               </span>
               <span class="qp-t">
-                <span class="qp-name">{t.title}</span>
+                <span class="qp-name">
+                  {t.title}
+                  {#if t.available_qualities?.includes('lossless')}
+                    <span class="badge sq">无损</span>
+                  {/if}
+                </span>
                 <span class="qp-artist">{t.artist || '未知艺人'}</span>
               </span>
               <span class="qp-d">{fmtDuration(t.duration_sec)}</span>

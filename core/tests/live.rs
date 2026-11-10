@@ -7,11 +7,20 @@
 use std::sync::Arc;
 use tinymusic_core::download::{build_filename, DownloadExtras, Downloader};
 use tinymusic_core::http::HttpClient;
-use tinymusic_core::model::{MusicProvider, Quality};
+use tinymusic_core::model::{MusicProvider, Quality, Track};
 use tinymusic_core::providers::kuwo::KuwoProvider;
 
 fn provider() -> KuwoProvider {
     KuwoProvider::with_http(Arc::new(HttpClient::new(700, 3)))
+}
+
+fn track(id: &str, duration_sec: u32) -> Track {
+    Track {
+        provider: "kuwo".into(),
+        id: id.into(),
+        duration_sec,
+        ..Track::default()
+    }
 }
 
 #[tokio::test]
@@ -42,7 +51,10 @@ async fn live_search() {
 async fn live_resolve_free_track() {
     let p = provider();
     // 192525785：实测可匿名获取整曲
-    let info = p.resolve("192525785", Quality::High).await.expect("应可解析");
+    let info = p
+        .resolve(&track("192525785", 0), Quality::Standard)
+        .await
+        .expect("应可解析");
     println!(
         "url={} bytes={:?} type={} availability={:?}",
         info.url, info.bytes, info.content_type, info.availability
@@ -59,7 +71,9 @@ async fn live_resolve_restricted_returns_unavailable() {
     // 现在 provider 会落到 trackmedia 链路拿到真直链，所以「受限曲」不再是不可用。
     // 这里改为验证「不存在的曲目」仍然如实返回错误，避免静默成功。
     let p = provider();
-    let r = p.resolve("999999999999", Quality::High).await;
+    let r = p
+        .resolve(&track("999999999999", 0), Quality::Standard)
+        .await;
     match r {
         Err(tinymusic_core::Error::Unavailable)
         | Err(tinymusic_core::Error::NotFound(_))
@@ -80,7 +94,7 @@ async fn live_download_writes_tagged_file() {
     // 找一首能取到整曲的
     let mut picked = None;
     for t in &page.items {
-        if let Ok(info) = p.resolve(&t.id, Quality::High).await {
+        if let Ok(info) = p.resolve(t, Quality::Standard).await {
             picked = Some((t.clone(), info));
             break;
         }
@@ -124,7 +138,12 @@ async fn live_download_writes_tagged_file() {
 async fn live_artist_and_album_grouping() {
     let p = provider();
     let a = p.artist("336", "周杰伦", 0).await.expect("艺人页失败");
-    println!("艺人 {}: {} 首, {} 张专辑", a.name, a.tracks.len(), a.albums.len());
+    println!(
+        "艺人 {}: {} 首, {} 张专辑",
+        a.name,
+        a.tracks.len(),
+        a.albums.len()
+    );
     assert!(!a.tracks.is_empty());
     assert!(!a.albums.is_empty());
     for al in a.albums.iter().take(3) {
@@ -132,10 +151,7 @@ async fn live_artist_and_album_grouping() {
     }
 
     let alb = a.albums.first().unwrap().clone();
-    let page = p
-        .album(&alb.id, &alb.name, 0)
-        .await
-        .expect("专辑页失败");
+    let page = p.album(&alb.id, &alb.name, 0).await.expect("专辑页失败");
     println!("专辑 {}: {} 首", page.name, page.tracks.len());
     assert!(!page.tracks.is_empty());
 }
@@ -147,11 +163,16 @@ async fn live_stream_proxy_supports_range() {
 
     let http = Arc::new(HttpClient::new(700, 3));
     let p = KuwoProvider::with_http(http.clone());
-    let info = p.resolve("192525785", Quality::High).await.expect("取链失败");
+    let info = p
+        .resolve(&track("192525785", 0), Quality::Standard)
+        .await
+        .expect("取链失败");
 
     let proxy = StreamProxy::start(http).await.expect("代理启动失败");
     println!("代理地址: {}", proxy.base_url());
-    let local = proxy.register(info.url.clone()).await;
+    let local = proxy
+        .register(info.url.clone(), Some(info.content_type.clone()))
+        .await;
     println!("本地地址: {}", local);
 
     // 用原始 TCP 发一个带 Range 的请求，避免引入额外 HTTP 客户端
@@ -179,8 +200,14 @@ async fn live_stream_proxy_supports_range() {
         }
     }
     let head = String::from_utf8_lossy(&buf);
-    println!("响应头:\n{}", head.lines().take(8).collect::<Vec<_>>().join("\n"));
-    assert!(head.starts_with("HTTP/1.1 206"), "应返回 206 Partial Content");
+    println!(
+        "响应头:\n{}",
+        head.lines().take(8).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        head.starts_with("HTTP/1.1 206"),
+        "应返回 206 Partial Content"
+    );
     assert!(head.to_lowercase().contains("content-range"));
     assert!(head.contains("1024"), "Content-Length 应为 1024");
 
@@ -199,7 +226,10 @@ async fn live_stream_proxy_supports_range() {
 #[ignore]
 async fn live_playlist_search_and_open() {
     let p = provider();
-    let page = p.search_playlists("周杰伦", 0, 5).await.expect("歌单搜索失败");
+    let page = p
+        .search_playlists("周杰伦", 0, 5)
+        .await
+        .expect("歌单搜索失败");
     println!("歌单总数={} 返回={}", page.total, page.items.len());
     assert!(!page.items.is_empty());
     for x in page.items.iter().take(3) {
@@ -221,7 +251,12 @@ async fn live_playlist_search_and_open() {
     // 打开第一个歌单，验证分页拉取与曲目映射
     let pid = page.items[0].id.clone();
     let d = p.playlist(&pid).await.expect("歌单详情失败");
-    println!("歌单《{}》 标称 {} 首, 实际拉取 {} 首", d.playlist.name, d.playlist.track_count, d.tracks.len());
+    println!(
+        "歌单《{}》 标称 {} 首, 实际拉取 {} 首",
+        d.playlist.name,
+        d.playlist.track_count,
+        d.tracks.len()
+    );
     assert!(!d.tracks.is_empty());
     let t = &d.tracks[0];
     println!("  首曲: {} - {} ({}s)", t.title, t.artist, t.duration_sec);
@@ -229,8 +264,15 @@ async fn live_playlist_search_and_open() {
     assert!(t.duration_sec > 0);
 
     // 歌单里的曲目必须能走通取链（不一定成功，但不能 panic）
-    let r = p.resolve(&t.id, Quality::High).await;
-    println!("  取链结果: {}", if r.is_ok() { "可播" } else { "不可用（受限曲，符合预期）" });
+    let r = p.resolve(t, Quality::Standard).await;
+    println!(
+        "  取链结果: {}",
+        if r.is_ok() {
+            "可播"
+        } else {
+            "不可用（受限曲，符合预期）"
+        }
+    );
 }
 
 #[tokio::test]
@@ -269,18 +311,24 @@ async fn live_auth_capabilities_are_declared() {
 #[ignore]
 async fn live_paid_song_plays_without_login() {
     let p = provider();
-    for q in [Quality::Lossless, Quality::Super, Quality::High] {
-        let info = p.resolve("440613", q).await.expect("取链失败");
+    for q in [Quality::Lossless, Quality::Super, Quality::Standard] {
+        let info = p.resolve(&track("440613", 223), q).await.expect("取链失败");
         let bytes = info.bytes.unwrap_or(0);
         println!(
-            "  {:?} -> {} bytes ({:.1} MB), ctype={}, avail={:?}",
+            "  {:?} -> {} bytes ({:.1} MB), ctype={}, avail={:?}, actual={:?}, format={:?}, degraded={}",
             q,
             bytes,
             bytes as f64 / 1_048_576.0,
             info.content_type,
-            info.availability
+            info.availability,
+            info.quality,
+            info.format,
+            info.degraded
         );
-        assert_eq!(info.availability, tinymusic_core::model::Availability::Available);
+        assert_eq!(
+            info.availability,
+            tinymusic_core::model::Availability::Available
+        );
         assert!(
             bytes > 1_000_000,
             "{:?} 拿到的是 {} 字节，疑似占位文件",
@@ -288,6 +336,13 @@ async fn live_paid_song_plays_without_login() {
             bytes
         );
         assert!(!info.url.contains("588957081"), "{:?} 命中占位 URL", q);
+        assert_eq!(info.quality, q, "{:?} 的实际档位应一致", q);
+        assert_eq!(
+            info.format.lossless,
+            q == Quality::Lossless,
+            "{:?} 的无损标记不对",
+            q
+        );
     }
 }
 
@@ -321,11 +376,106 @@ async fn live_search_artist_has_albums() {
         .iter()
         .find(|t| !t.artist_id.is_empty())
         .expect("搜索结果里应有带 artist_id 的曲目");
-    println!("首个结果: {} - {} (artist_id={})", first.title, first.artist, first.artist_id);
-    let ap = p.artist(&first.artist_id, &first.artist, 0).await.expect("艺人页失败");
-    println!("艺人 {} 专辑数 {} / 曲目 {}", ap.name, ap.albums.len(), ap.tracks.len());
+    println!(
+        "首个结果: {} - {} (artist_id={})",
+        first.title, first.artist, first.artist_id
+    );
+    let ap = p
+        .artist(&first.artist_id, &first.artist, 0)
+        .await
+        .expect("艺人页失败");
+    println!(
+        "艺人 {} 专辑数 {} / 曲目 {}",
+        ap.name,
+        ap.albums.len(),
+        ap.tracks.len()
+    );
     for a in ap.albums.iter().take(5) {
         println!("  [{}] {} ({:?})", a.id, a.name, a.year);
     }
     assert!(!ap.albums.is_empty(), "艺人应有专辑");
+}
+
+/// 列表没带 MINFO 时，musicinfo 探测应给出可播档位。
+#[tokio::test]
+#[ignore]
+async fn live_track_qualities() {
+    let p = provider();
+    let t = track("440613", 223);
+    let q = p.track_qualities(&t).await.expect("音质探测失败");
+    println!(
+        "available={:?} has_advanced={} known={}",
+        q.available, q.has_advanced, q.known
+    );
+    assert!(q.known);
+    assert!(q.available.contains(&Quality::Standard));
+    assert!(q.available.contains(&Quality::Super));
+    assert!(q.available.contains(&Quality::Lossless));
+    assert!(q.has_advanced, "该曲目录里有加密高级格式");
+}
+
+/// 高级档位必须明确拒绝，不能返回占位文件冒充。
+#[tokio::test]
+#[ignore]
+async fn live_advanced_quality_is_rejected() {
+    let p = provider();
+    let t = track("440613", 223);
+    for q in [Quality::HiRes, Quality::Atmos, Quality::Master] {
+        let r = p.resolve(&t, q).await;
+        println!("{:?} -> {:?}", q, r.as_ref().map(|i| i.quality).err());
+        assert!(r.is_err(), "{:?} 不应返回可播 URL", q);
+    }
+}
+
+/// 没有 ALFLAC 的曲目请求无损时，应回退到 128/320 并标记 degraded，
+/// 不能把 128k MP3 标成“无损”。
+#[tokio::test]
+#[ignore]
+async fn live_lossless_falls_back_honestly() {
+    let p = provider();
+    // 200677874：实测无 ALFLAC（48s 短曲）
+    let t = track("200677874", 48);
+    let info = p
+        .resolve(&t, Quality::Lossless)
+        .await
+        .expect("应有可播档位");
+    println!(
+        "requested={:?} actual={:?} degraded={} format={:?} bytes={:?}",
+        info.requested, info.quality, info.degraded, info.format, info.bytes
+    );
+    assert_ne!(info.quality, Quality::Lossless, "没有 FLAC 不能标无损");
+    assert!(info.degraded);
+}
+
+/// 无损下载必须保留 fLaC 文件头，不能把 ID3 塞到前面。
+#[tokio::test]
+#[ignore]
+async fn live_download_lossless_keeps_flac_header() {
+    let http = Arc::new(HttpClient::new(700, 3));
+    let p = KuwoProvider::with_http(http.clone());
+    let t = track("440613", 223);
+    let info = p.resolve(&t, Quality::Lossless).await.expect("取无损失败");
+    assert_eq!(info.quality, Quality::Lossless);
+
+    let dl = Downloader::new(http);
+    let dir = std::env::temp_dir().join("tinymusic_live_flac");
+    let path = dl
+        .run(
+            &t,
+            &info,
+            &dir,
+            &build_filename(&t, "flac"),
+            &DownloadExtras::default(),
+            Box::new(|_, _| {}),
+        )
+        .await
+        .expect("无损下载失败");
+    let head = std::fs::read(&path).unwrap();
+    println!(
+        "  落盘 {} 字节, head={:?}",
+        head.len(),
+        &head[..4.min(head.len())]
+    );
+    assert_eq!(&head[..4], b"fLaC", "FLAC 文件头被破坏");
+    let _ = std::fs::remove_dir_all(&dir);
 }

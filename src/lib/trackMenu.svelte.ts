@@ -69,7 +69,7 @@ export async function openTrackMenu(
     {
       label: '下载（含歌词与封面）',
       icon: icons.download,
-      disabled: blocked,
+      disabled: blocked || track.provider === 's3',
       run: () => {
         void requestDownload([track]);
       },

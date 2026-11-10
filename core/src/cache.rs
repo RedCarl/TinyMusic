@@ -44,6 +44,12 @@ impl<K: Eq + Hash + Clone, V: Clone> TtlCache<K, V> {
         map.insert(k, (Instant::now(), v));
     }
 
+    pub fn clear(&self) {
+        if let Ok(mut map) = self.map.lock() {
+            map.clear();
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.map.lock().map(|m| m.len()).unwrap_or(0)
     }

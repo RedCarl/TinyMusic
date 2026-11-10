@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
-  import { coverUrl, fmtDuration, type Quality } from '../lib/api';
+  import { coverUrl, fmtDuration, qualityLabel } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import {
     player,
@@ -43,13 +43,7 @@
     return idx;
   });
 
-  const QUALITY_LABEL: Record<Quality, string> = {
-    standard: '标准',
-    high: '高品',
-    super: '超高',
-    lossless: '无损',
-  };
-  const qualityLabel = $derived(QUALITY_LABEL[player.quality] ?? '');
+  const qualityText = $derived(player.actualLabel || qualityLabel(player.quality));
 
   function cancelAnim() {
     if (scrollAnim) cancelAnimationFrame(scrollAnim);
@@ -203,8 +197,8 @@
     </span>
 
     <div class="lyrics-top-actions">
-      {#if qualityLabel}
-        <span class="ly-quality" title="当前播放音质">{qualityLabel}</span>
+      {#if qualityText}
+        <span class="ly-quality" title="当前播放音质">{qualityText}</span>
       {/if}
     </div>
   </header>

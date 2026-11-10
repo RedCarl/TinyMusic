@@ -12,8 +12,10 @@
     downloadUi.busy ? downloadUi.progress : downloadUi.doneMsg || downloadUi.err || ''
   );
 
+  const localTracks = $derived(tracks.filter((t) => t.provider !== 's3'));
+
   function downloadAll() {
-    void requestDownload(tracks);
+    void requestDownload(localTracks);
   }
 </script>
 
@@ -26,7 +28,7 @@
     <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
     播放全部
   </button>
-  <button disabled={busy || tracks.length === 0} onclick={downloadAll}>
+  <button disabled={busy || localTracks.length === 0} onclick={downloadAll}>
     <HugeiconsIcon icon={busy ? icons.loading : icons.download} size={ICON_SIZE.inline} />
     {busy ? '下载中…' : `下载全部${label ? ' · ' + label : ''}`}
   </button>

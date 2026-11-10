@@ -12,7 +12,11 @@ export interface MenuItem {
   hint?: string;
   danger?: boolean;
   disabled?: boolean;
-  run: () => void | Promise<void>;
+  /** 当前选中项：用按钮背景表示，不用勾 */
+  selected?: boolean;
+  /** 二级菜单：鼠标悬停展开（音质选择等） */
+  submenu?: MenuEntry[];
+  run?: () => void | Promise<void>;
 }
 
 export type MenuEntry = MenuItem | { sep: true };

@@ -6,8 +6,8 @@
 use crate::error::{Error, Result};
 use crate::http::HttpClient;
 use crate::id3;
-use crate::model::{LyricLine, Quality, StreamInfo, Track};
-use crate::providers::kuwo::PLACEHOLDER_BYTES;
+use crate::model::{LyricLine, StreamInfo, Track};
+use crate::quality::PLACEHOLDER_BYTES;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
@@ -36,7 +36,10 @@ pub fn build_lrc(track: &Track, lyrics: &[LyricLine]) -> String {
     }
     out.push_str("[by:TinyMusic]\n");
 
-    let mut lines: Vec<&LyricLine> = lyrics.iter().filter(|l| !l.text.trim().is_empty()).collect();
+    let mut lines: Vec<&LyricLine> = lyrics
+        .iter()
+        .filter(|l| !l.text.trim().is_empty())
+        .collect();
     lines.sort_by_key(|l| l.time_ms);
     for l in lines {
         let ms = l.time_ms;
@@ -74,7 +77,10 @@ impl Downloader {
     ) -> Result<Vec<u8>> {
         let resp = self.http.get_range(&info.url, None).await?;
         if !resp.status().is_success() {
-            return Err(Error::Http(format!("下载状态码 {}", resp.status().as_u16())));
+            return Err(Error::Http(format!(
+                "下载状态码 {}",
+                resp.status().as_u16()
+            )));
         }
         let total = resp.content_length().or(info.bytes);
         let mut resp = resp;
@@ -89,11 +95,18 @@ impl Downloader {
         if written == PLACEHOLDER_BYTES {
             return Err(Error::Unavailable);
         }
-        if track.duration_sec >= 30 && info.quality != Quality::Lossless {
-            let est = (written as f64 * 8.0) / (info.quality.nominal_kbps() as f64 * 1000.0);
-            if est * 100.0 < (track.duration_sec as f64) * 60.0 {
-                return Err(Error::Unavailable);
+        if track.duration_sec >= 30 && !info.format.lossless {
+            if let Some(kbps) = info.format.bitrate_kbps.or(info.quality.nominal_kbps()) {
+                let est = (written as f64 * 8.0) / (kbps as f64 * 1000.0);
+                if est * 100.0 < (track.duration_sec as f64) * 60.0 {
+                    return Err(Error::Unavailable);
+                }
             }
+        }
+
+        // 无损文件保留原始字节，不把 ID3 塞进 FLAC/ALAC。
+        if info.format.lossless {
+            return Ok(buf);
         }
 
         // 剥离远端可能自带的 ID3 头，再写入带封面的标签
@@ -101,7 +114,11 @@ impl Downloader {
             let mut cur = std::io::Cursor::new(&buf[..]);
             id3::existing_tag_len(&mut cur).unwrap_or(0) as usize
         };
-        let audio = if skip > 0 && skip < buf.len() { &buf[skip..] } else { &buf[..] };
+        let audio = if skip > 0 && skip < buf.len() {
+            &buf[skip..]
+        } else {
+            &buf[..]
+        };
         let mime = if extras.cover_mime.trim().is_empty() {
             "image/jpeg"
         } else {
@@ -130,7 +147,10 @@ impl Downloader {
 
         let resp = self.http.get_range(&info.url, None).await?;
         if !resp.status().is_success() {
-            return Err(Error::Http(format!("下载状态码 {}", resp.status().as_u16())));
+            return Err(Error::Http(format!(
+                "下载状态码 {}",
+                resp.status().as_u16()
+            )));
         }
         let total = resp.content_length().or(info.bytes);
 
@@ -152,12 +172,27 @@ impl Downloader {
             return Err(Error::Unavailable);
         }
         // 防护：明显短于标称时长（按档位码率估算）
-        if track.duration_sec >= 30 && info.quality != Quality::Lossless {
-            let est = (written as f64 * 8.0) / (info.quality.nominal_kbps() as f64 * 1000.0);
-            if est * 100.0 < (track.duration_sec as f64) * 60.0 {
-                let _ = tokio::fs::remove_file(&part_path).await;
-                return Err(Error::Unavailable);
+        if track.duration_sec >= 30 && !info.format.lossless {
+            if let Some(kbps) = info.format.bitrate_kbps.or(info.quality.nominal_kbps()) {
+                let est = (written as f64 * 8.0) / (kbps as f64 * 1000.0);
+                if est * 100.0 < (track.duration_sec as f64) * 60.0 {
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    return Err(Error::Unavailable);
+                }
             }
+        }
+
+        // 无损文件不写 ID3，直接改名；歌词仍写同名 .lrc。
+        if info.format.lossless {
+            tokio::fs::rename(&part_path, &final_path).await?;
+            if let Some(lrc) = &extras.lyrics_lrc {
+                if !lrc.trim().is_empty() {
+                    let lrc_path = final_path.with_extension("lrc");
+                    let _ = tokio::fs::write(&lrc_path, lrc.as_bytes()).await;
+                }
+            }
+            on_progress(written, Some(written));
+            return Ok(final_path);
         }
 
         // 写标签（含封面）后改名
@@ -172,9 +207,7 @@ impl Downloader {
             extras.cover_mime.clone()
         };
         tokio::task::spawn_blocking(move || {
-            let cover_ref = cover
-                .as_ref()
-                .map(|c| (c.as_slice(), mime.as_str()));
+            let cover_ref = cover.as_ref().map(|c| (c.as_slice(), mime.as_str()));
             id3::write_tags_with_cover(&tmp, &title, &artist, &album, cover_ref).map_err(Error::Io)
         })
         .await
@@ -197,7 +230,9 @@ impl Downloader {
 
 /// 文件名清洗：去掉 Windows 非法字符，限长 120 字符
 pub fn sanitize_filename(s: &str) -> String {
-    let bad = ['\\', '/', ':', '*', '?', '"', '<', '>', '|', '\r', '\n', '\t'];
+    let bad = [
+        '\\', '/', ':', '*', '?', '"', '<', '>', '|', '\r', '\n', '\t',
+    ];
     let mut out: String = s
         .chars()
         .map(|c| if bad.contains(&c) { '_' } else { c })
@@ -288,8 +323,14 @@ mod tests {
             ..Default::default()
         };
         let lines = vec![
-            LyricLine { time_ms: 65_430, text: "第二句".into() },
-            LyricLine { time_ms: 3_250, text: "第一句".into() },
+            LyricLine {
+                time_ms: 65_430,
+                text: "第二句".into(),
+            },
+            LyricLine {
+                time_ms: 3_250,
+                text: "第一句".into(),
+            },
         ];
         let lrc = build_lrc(&t, &lines);
         assert!(lrc.starts_with('\u{feff}'));

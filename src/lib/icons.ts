@@ -52,6 +52,7 @@ import {
   DragDropVerticalIcon,
   FireIcon,
   MoreHorizontalIcon,
+  HeadphonesIcon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
@@ -99,6 +100,7 @@ export const icons = {
   grip: DragDropVerticalIcon,
   hot: FireIcon,
   more: MoreHorizontalIcon,
+  quality: HeadphonesIcon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */

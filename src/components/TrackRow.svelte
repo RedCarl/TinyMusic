@@ -68,6 +68,7 @@
 
   const unavailable = $derived(isBlocked(track.availability));
   const vipOnly = $derived(track.availability === 'vip_only');
+  const cloudOnly = $derived(track.provider === 's3');
 
   const playLabel = $derived(
     unavailable
@@ -131,6 +132,9 @@
     <span class="ttl" title={track.subtitle ? `${track.title} · ${track.subtitle}` : track.title}
       >{track.title}{#if track.subtitle}<span class="sub">{track.subtitle}</span>{/if}</span
     >
+    {#if track.available_qualities?.includes('lossless')}
+      <span class="badge sq" title="本曲有无损 FLAC">无损</span>
+    {/if}
     {#if track.availability === 'preview_only'}<span class="badge warn">仅试听</span>{/if}
     {#if vipOnly}<span class="badge warn">会员曲</span>{/if}
     {#if track.availability === 'unavailable'}<span class="badge mute">不可用</span>{/if}
@@ -168,9 +172,9 @@
     {/if}
     <button
       class="icon"
-      title={pending ? '正在下载' : '下载（含歌词与封面）'}
-      aria-label={pending ? '正在下载' : '下载'}
-      disabled={unavailable || pending}
+      title={cloudOnly ? '网盘文件已在云端' : pending ? '正在下载' : '下载（含歌词与封面）'}
+      aria-label={cloudOnly ? '网盘文件' : pending ? '正在下载' : '下载'}
+      disabled={unavailable || pending || cloudOnly}
       onclick={() => requestDownload([track])}
     >
       {#if pending}

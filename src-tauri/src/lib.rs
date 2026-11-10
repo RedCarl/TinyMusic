@@ -14,8 +14,8 @@ use tauri::{Emitter, Manager, State};
 use tinymusic_core::download::{build_filename, build_lrc, DownloadExtras, Downloader};
 use tinymusic_core::http::HttpClient;
 use tinymusic_core::model::*;
-use tinymusic_core::proxy::StreamProxy;
 use tinymusic_core::providers::kuwo::KuwoProvider;
+use tinymusic_core::proxy::StreamProxy;
 use tinymusic_core::s3::{S3Config, S3};
 use tinymusic_core::storage::{DownloadRow, Storage};
 
@@ -25,6 +25,9 @@ use tinymusic_core::storage::{DownloadRow, Storage};
 pub struct Settings {
     pub download_dir: String,
     pub default_quality: String,
+    /// 配置结构版本：用于一次性迁移旧的 high 档语义
+    #[serde(default = "default_settings_version")]
+    pub settings_version: u32,
     #[serde(default = "default_concurrency")]
     pub concurrency: u32,
 
@@ -55,6 +58,10 @@ fn default_concurrency() -> u32 {
     2
 }
 
+fn default_settings_version() -> u32 {
+    1
+}
+
 fn default_region() -> String {
     "us-east-1".into()
 }
@@ -71,7 +78,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             download_dir: dirs_download(),
-            default_quality: "high".into(),
+            default_quality: "super".into(),
+            settings_version: 2,
             concurrency: 2,
             s3_enabled: false,
             s3_endpoint: String::new(),
@@ -124,12 +132,41 @@ impl AppState {
     }
 }
 
+fn normalize_settings(s: &mut Settings) -> bool {
+    let mut changed = false;
+    if s.settings_version < 2 {
+        // 旧版的 high 实际就是 128k；不迁移的话会被当成“高品质”显示错。
+        if s.default_quality == "high" {
+            s.default_quality = "standard".into();
+        }
+        s.settings_version = 2;
+        changed = true;
+    }
+    match Quality::parse(&s.default_quality) {
+        None => {
+            s.default_quality = "super".into();
+            changed = true;
+        }
+        Some(q) if q.is_advanced() => {
+            // 旧配置/手改配置里的高级档当前不可播，回退到 320k
+            s.default_quality = "super".into();
+            changed = true;
+        }
+        Some(_) => {}
+    }
+    changed
+}
+
 fn load_settings(dir: &std::path::Path) -> Settings {
     let p = dir.join("settings.json");
-    std::fs::read_to_string(p)
+    let mut s = std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if normalize_settings(&mut s) {
+        save_settings(dir, &s);
+    }
+    s
 }
 
 fn save_settings(dir: &std::path::Path, s: &Settings) {
@@ -243,10 +280,7 @@ fn favorites_object_key(prefix: &str) -> String {
 /// 把本地喜欢列表写成网盘上的 favorites.json
 async fn push_favorites(state: &AppState) -> Result<(), String> {
     let client = s3_client(state)?;
-    let list = state
-        .storage
-        .list_favorites()
-        .map_err(|e| e.to_string())?;
+    let list = state.storage.list_favorites().map_err(|e| e.to_string())?;
     let key = favorites_object_key(&client.config().prefix);
     let body = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
     client
@@ -263,7 +297,7 @@ async fn sync_favorite_track(state: &AppState, track: &Track) -> Result<(), Stri
     let settings = state.settings_snapshot();
     let q = Quality::from_str(&settings.default_quality);
     let p = state.provider(&track.provider)?;
-    let info = p.resolve(&track.id, q).await.map_err(|e| e.to_string())?;
+    let info = p.resolve(track, q).await.map_err(|e| e.to_string())?;
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("fav-{}-{}", seq, track.id);
@@ -351,14 +385,40 @@ async fn search(
 #[tauri::command]
 async fn resolve(
     state: State<'_, AppState>,
-    provider: String,
-    id: String,
+    track: Track,
     quality: String,
 ) -> Result<StreamInfo, String> {
-    let p = state.provider(&provider)?;
-    p.resolve(&id, Quality::from_str(&quality))
-        .await
-        .map_err(|e| e.to_string())
+    let q = Quality::parse(&quality).ok_or_else(|| "未知音质".to_string())?;
+    let p = state.provider(&track.provider)?;
+    p.resolve(&track, q).await.map_err(|e| e.to_string())
+}
+
+/// 列表接口没带 MINFO 时，按曲目探测可播档位。
+#[tauri::command]
+async fn track_qualities(
+    state: State<'_, AppState>,
+    track: Track,
+) -> Result<TrackQualities, String> {
+    if !track.available_qualities.is_empty() {
+        return Ok(TrackQualities {
+            available: track.available_qualities.clone(),
+            has_advanced: track.has_advanced,
+            known: true,
+        });
+    }
+    if track.provider == "s3" {
+        let mut available = Vec::new();
+        if track.id.to_ascii_lowercase().ends_with(".flac") {
+            available.push(Quality::Lossless);
+        }
+        return Ok(TrackQualities {
+            available,
+            has_advanced: false,
+            known: true,
+        });
+    }
+    let p = state.provider(&track.provider)?;
+    p.track_qualities(&track).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -448,36 +508,63 @@ async fn album(
 #[tauri::command]
 async fn player_open(
     state: State<'_, AppState>,
-    provider: String,
-    id: String,
+    track: Track,
     quality: String,
+    force_refresh: Option<bool>,
 ) -> Result<PlayerSource, String> {
-    // 网盘里的歌：给一个 6 小时有效的签名直链，不经过平台取链
-    if provider == "s3" {
+    // 网盘里的歌：给一个 6 小时有效的签名直链，不经过平台取链。
+    // 格式按文件后缀推断，UI 显示 FLAC/MP3，而不是笼统的“原文件”。
+    if track.provider == "s3" {
         let client = s3_client(&state)?;
-        let url = client.presign_get(&id, 6 * 3600).map_err(|e| e.to_string())?;
+        let url = client
+            .presign_get(&track.id, 6 * 3600)
+            .map_err(|e| e.to_string())?;
+        let (actual_quality, format) = s3_audio_format(&track.id);
+        let verified = format.codec != Codec::Unknown;
         return Ok(PlayerSource {
             url,
-            quality: "high".into(),
+            quality: actual_quality.as_str().to_string(),
+            requested_quality: quality,
+            format,
             bytes: None,
+            degraded: false,
+            verified,
+            via: "s3".into(),
         });
     }
-    let p = state.provider(&provider)?;
-    let q = Quality::from_str(&quality);
-    let info = p.resolve(&id, q).await.map_err(|e| e.to_string())?;
-    let url = state.proxy.register(info.url.clone()).await;
+    let p = state.provider(&track.provider)?;
+    let q = Quality::parse(&quality).ok_or_else(|| "未知音质".to_string())?;
+    if force_refresh.unwrap_or(false) {
+        p.invalidate_resolve(&track.id);
+    }
+    let info = p.resolve(&track, q).await.map_err(|e| e.to_string())?;
+    let url = state
+        .proxy
+        .register(info.url.clone(), Some(info.content_type.clone()))
+        .await;
     Ok(PlayerSource {
         url,
         quality: info.quality.as_str().to_string(),
+        requested_quality: info.requested.as_str().to_string(),
+        format: info.format,
         bytes: info.bytes,
+        degraded: info.degraded,
+        verified: info.verified,
+        via: info.via,
     })
 }
 
 #[derive(Debug, Serialize)]
 pub struct PlayerSource {
     pub url: String,
+    /// 实际档位；无法识别格式的网盘文件为 "original"
     pub quality: String,
+    pub requested_quality: String,
+    pub format: AudioFormat,
     pub bytes: Option<u64>,
+    pub degraded: bool,
+    pub verified: bool,
+    pub via: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -500,12 +587,13 @@ async fn download_start(
     let q = Quality::from_str(quality.as_deref().unwrap_or(&settings.default_quality));
 
     // 先取流（同步等待，确保能给出「不可用」的明确错误）
-    let info = p.resolve(&track.id, q).await.map_err(|e| e.to_string())?;
+    let info = p.resolve(&track, q).await.map_err(|e| e.to_string())?;
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("t{}-{}", seq, track.id);
     let dir = PathBuf::from(&settings.download_dir);
-    let fname = build_filename(&track, ext_for(&info.content_type));
+    let ext = actual_ext(&info);
+    let fname = build_filename(&track, ext);
 
     state
         .storage
@@ -544,7 +632,9 @@ async fn download_start(
 
         match res {
             Ok(path) => {
-                let bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+                let bytes = std::fs::metadata(&path)
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0);
                 let _ = storage.update_download(&tid, "done", bytes);
                 // 用最终路径覆盖记录
                 let _ = storage.insert_download(
@@ -563,6 +653,45 @@ async fn download_start(
     });
 
     Ok(task_id)
+}
+
+/// 网盘文件按后缀推断显示格式；不解码、不探测，只用于 UI 文案。
+fn s3_audio_format(key: &str) -> (Quality, AudioFormat) {
+    let lower = key.to_ascii_lowercase();
+    let (codec, lossless, quality) = if lower.ends_with(".flac") {
+        (Codec::Flac, true, Quality::Lossless)
+    } else if lower.ends_with(".mp3") {
+        (Codec::Mp3, false, Quality::Standard)
+    } else if lower.ends_with(".m4a") || lower.ends_with(".mp4") || lower.ends_with(".aac") {
+        (Codec::Aac, false, Quality::Standard)
+    } else if lower.ends_with(".ogg") {
+        (Codec::Ogg, false, Quality::Standard)
+    } else if lower.ends_with(".wav") {
+        (Codec::Wav, true, Quality::Lossless)
+    } else {
+        return (Quality::Standard, AudioFormat::default());
+    };
+    (
+        quality,
+        AudioFormat {
+            codec,
+            bitrate_kbps: None,
+            sample_rate_hz: None,
+            bits_per_sample: None,
+            channels: None,
+            lossless,
+            verified: false,
+        },
+    )
+}
+
+/// 下载/上传扩展名以实际格式为准；格式未知时才退回 Content-Type。
+fn actual_ext(info: &StreamInfo) -> &'static str {
+    if info.format.codec == tinymusic_core::model::Codec::Unknown {
+        ext_for(&info.content_type)
+    } else {
+        info.format.extension()
+    }
 }
 
 fn ext_for(content_type: &str) -> &'static str {
@@ -608,6 +737,35 @@ fn favorite_add(
     Ok(())
 }
 
+/// 取消喜欢时顺手删掉网盘「喜欢」目录里的同名文件，
+/// 否则下次 favorites_pull 会把「喜欢」目录里的歌又补回来。
+async fn delete_cloud_favorite(state: &AppState, track: &Track) {
+    let Ok(client) = s3_client(state) else {
+        return;
+    };
+    let folder = playlist_prefix(&client.normalized_prefix(), FAVORITES_PLAYLIST);
+    let Ok(keys) = client.list_keys(&folder).await else {
+        return;
+    };
+    let fname = build_filename(track, "x");
+    let stem = fname.strip_suffix(".x").unwrap_or(&fname);
+    let mut targets = Vec::new();
+    if track.provider == "s3" {
+        targets.push(track.id.clone());
+    }
+    for key in &keys {
+        let base = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
+        if base.rsplit('/').next() == Some(stem) {
+            targets.push(key.clone());
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    for key in targets {
+        let _ = client.delete_object(&key).await;
+    }
+}
+
 #[tauri::command]
 fn favorite_remove(
     app: tauri::AppHandle,
@@ -615,6 +773,11 @@ fn favorite_remove(
     provider: String,
     id: String,
 ) -> Result<(), String> {
+    let track = state
+        .storage
+        .list_favorites()
+        .ok()
+        .and_then(|list| list.into_iter().find(|t| t.provider == provider && t.id == id));
     state
         .storage
         .remove_favorite(&provider, &id)
@@ -622,6 +785,9 @@ fn favorite_remove(
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
         let st = app2.state::<AppState>();
+        if let Some(t) = track {
+            delete_cloud_favorite(&st, &t).await;
+        }
         let _ = push_favorites(&st).await;
     });
     Ok(())
@@ -644,7 +810,18 @@ fn favorite_check(
         .map_err(|e| e.to_string())
 }
 
-/// 从网盘拉取 favorites.json，合并进本地（用于多设备/重装后恢复）
+fn favorite_dedupe_key(t: &Track) -> String {
+    format!(
+        "{}|{}",
+        t.title.trim().to_lowercase(),
+        t.artist.trim().to_lowercase()
+    )
+}
+
+/// 从网盘拉取「喜欢」：favorites.json + 「喜欢」目录里的实际音频，合并去重。
+///
+/// 只看 favorites.json 时，如果 JSON 丢了/为空，网盘里已经存在的歌曲就不会显示；
+/// 这里把目录里的文件也补进来，并把补进来的结果写回 JSON。
 #[tauri::command]
 async fn favorites_pull(state: State<'_, AppState>) -> Result<Vec<Track>, String> {
     let client = match s3_client(&state) {
@@ -652,13 +829,32 @@ async fn favorites_pull(state: State<'_, AppState>) -> Result<Vec<Track>, String
         Err(_) => return state.storage.list_favorites().map_err(|e| e.to_string()),
     };
     let key = favorites_object_key(&client.config().prefix);
-    let remote = match client.get_object(&key).await.map_err(|e| e.to_string())? {
+    let mut merged = match client.get_object(&key).await.map_err(|e| e.to_string())? {
         Some(bytes) => serde_json::from_slice::<Vec<Track>>(&bytes).unwrap_or_default(),
         None => Vec::new(),
     };
-    for t in &remote {
+    let json_len = merged.len();
+
+    // 目录里存在的音频是「喜欢」的实物；JSON 只是元数据缓存。
+    if let Ok(rows) = list_s3_track_rows(&client, FAVORITES_PLAYLIST).await {
+        let mut seen: Vec<String> = merged.iter().map(favorite_dedupe_key).collect();
+        for row in rows {
+            let k = favorite_dedupe_key(&row.track);
+            if !seen.contains(&k) {
+                seen.push(k);
+                merged.push(row.track);
+            }
+        }
+    }
+
+    for t in &merged {
         let _ = state.storage.upsert_track(t);
         let _ = state.storage.add_favorite(t);
+    }
+
+    // 目录里补出来的歌曲写回 JSON，下次启动不再依赖“目录扫描”。
+    if merged.len() > json_len {
+        let _ = push_favorites(&state).await;
     }
     state.storage.list_favorites().map_err(|e| e.to_string())
 }
@@ -669,12 +865,65 @@ fn settings_get(state: State<'_, AppState>) -> Settings {
 }
 
 #[tauri::command]
-fn settings_set(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+fn settings_set(state: State<'_, AppState>, mut settings: Settings) -> Result<(), String> {
+    normalize_settings(&mut settings);
+    match Quality::parse(&settings.default_quality) {
+        Some(q) if !q.is_advanced() => {}
+        Some(q) => return Err(format!("{} 当前未接入", q.label())),
+        None => return Err("未知音质".into()),
+    }
     if let Ok(mut s) = state.settings.lock() {
         *s = settings.clone();
     }
     save_settings(&state.config_dir, &settings);
     Ok(())
+}
+
+/// 只改默认音质（播放器菜单用），避免覆盖其他设置。
+#[tauri::command]
+fn quality_set(state: State<'_, AppState>, quality: String) -> Result<String, String> {
+    let q = Quality::parse(&quality).ok_or_else(|| "未知音质".to_string())?;
+    if q.is_advanced() {
+        return Err(format!("{} 当前未接入", q.label()));
+    }
+    let mut settings = state.settings_snapshot();
+    settings.default_quality = q.as_str().to_string();
+    normalize_settings(&mut settings);
+    if let Ok(mut s) = state.settings.lock() {
+        *s = settings.clone();
+    }
+    save_settings(&state.config_dir, &settings);
+    Ok(q.as_str().to_string())
+}
+
+/// 六个档位的全局可用性。前三个可播；高级三档当前只有说明。
+#[tauri::command]
+fn quality_capabilities() -> Vec<QualityCapability> {
+    const ALL: [Quality; 6] = [
+        Quality::Standard,
+        Quality::Super,
+        Quality::Lossless,
+        Quality::HiRes,
+        Quality::Atmos,
+        Quality::Master,
+    ];
+    ALL.iter()
+        .map(|q| {
+            let advanced = q.is_advanced();
+            QualityCapability {
+                value: *q,
+                label: q.label().to_string(),
+                kbps: q.nominal_kbps(),
+                lossless: q.is_lossless(),
+                available: !advanced,
+                reason: if advanced {
+                    Some("需要会员账号与加密音频解密，当前版本未接入".into())
+                } else {
+                    None
+                },
+            }
+        })
+        .collect()
 }
 
 // ---------- 歌单 ----------
@@ -997,15 +1246,13 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
         .resizable(false)
         // 先按桌面宽度创建（此时窗口是隐藏的，用户看不到），
         // 否则窄视口下站点会切移动布局，「登录/注册」入口根本不存在，弹窗点不出来
-
         // 直接显示：网页登录入口只认真实点击，合成事件点不开，
         // 所以先把页面亮出来，用户点一次右上角「登录/注册」后我们再收成登录框
         .visible(false)
         .inner_size(1280.0, 800.0)
         .on_new_window(move |url, features| {
             // QQ / 微信登录会 window.open 一个扫码页；WKWebView/WebView2 默认弹不出来，这里显式建一个
-            static POPUP_SEQ: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
+            static POPUP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let seq = POPUP_SEQ.fetch_add(1, Ordering::Relaxed);
             let label = format!("kwlogin-pop-{seq}");
             let target = url.clone();
@@ -1061,7 +1308,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                 // 连续取不到才认为窗口已经被关掉
                 misses += 1;
                 if misses > 5 {
-                        return;
+                    return;
                 }
                 continue;
             };
@@ -1144,7 +1391,7 @@ async fn login_open(app: tauri::AppHandle) -> Result<(), String> {
                 closed_streak += 1;
                 if closed_streak >= 1 {
                     let _ = w.close();
-                        return;
+                    return;
                 }
             } else {
                 closed_streak = 0;
@@ -1225,13 +1472,11 @@ fn clear_kuwo_cookies(w: &tauri::WebviewWindow) {
             if !domain.contains("kuwo.cn") && !c.name().starts_with("kw") {
                 continue;
             }
-            let mut b = tauri::webview::cookie::Cookie::build((
-                c.name().to_string(),
-                String::new(),
-            ))
-            .path(c.path().unwrap_or("/").to_string())
-            .secure(c.secure().unwrap_or(true))
-            .max_age(tauri::webview::cookie::time::Duration::ZERO);
+            let mut b =
+                tauri::webview::cookie::Cookie::build((c.name().to_string(), String::new()))
+                    .path(c.path().unwrap_or("/").to_string())
+                    .secure(c.secure().unwrap_or(true))
+                    .max_age(tauri::webview::cookie::time::Duration::ZERO);
             if !domain.is_empty() {
                 b = b.domain(domain.to_string());
             }
@@ -1250,8 +1495,7 @@ async fn login_purge(app: tauri::AppHandle) -> Result<(), String> {
     let (w, created) = match existing {
         Some(w) => (w, false),
         None => {
-            let url =
-                tauri::Url::parse("https://www.kuwo.cn/").map_err(|e| e.to_string())?;
+            let url = tauri::Url::parse("https://www.kuwo.cn/").map_err(|e| e.to_string())?;
             let w = tauri::WebviewWindowBuilder::new(
                 &app,
                 "kwlogin-purge",
@@ -1266,9 +1510,8 @@ async fn login_purge(app: tauri::AppHandle) -> Result<(), String> {
         }
     };
 
-    let _ = w.eval(
-        "try{localStorage.clear();sessionStorage.clear();document.cookie='';}catch(e){}",
-    );
+    let _ =
+        w.eval("try{localStorage.clear();sessionStorage.clear();document.cookie='';}catch(e){}");
     clear_kuwo_cookies(&w);
 
     if created {
@@ -1315,9 +1558,8 @@ fn url_encode_component(s: &str) -> String {
 /// 酷我微信扫码登录地址（与官网 wxLogin 的拼法一致）
 fn wechat_login_url() -> String {
     let callback = url_encode_component("https://www.kuwo.cn/callback");
-    let inner = format!(
-        "http://i.kuwo.cn/US/platform/WeixinCallback.jsp?f=web&callbackUrl={callback}"
-    );
+    let inner =
+        format!("http://i.kuwo.cn/US/platform/WeixinCallback.jsp?f=web&callbackUrl={callback}");
     format!(
         "https://open.weixin.qq.com/connect/qrconnect?appid=wx41c1275bb3e28427&response_type=code&scope=snsapi_login&redirect_uri={}",
         url_encode_component(&inner)
@@ -1409,7 +1651,7 @@ async fn download_batch(
             total: Some(total_n as u64),
         });
 
-        let info = match p.resolve(&track.id, q).await {
+        let info = match p.resolve(track, q).await {
             Ok(v) => v,
             Err(_) => {
                 failed += 1;
@@ -1419,7 +1661,7 @@ async fn download_batch(
 
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("b{}-{}", seq, track.id);
-        let fname = build_filename(track, ext_for(&info.content_type));
+        let fname = build_filename(track, actual_ext(&info));
         state
             .storage
             .insert_download(&task_id, track, info.quality, "", 0, "running")
@@ -1448,7 +1690,9 @@ async fn download_batch(
 
         match res {
             Ok(path) => {
-                let bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+                let bytes = std::fs::metadata(&path)
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0);
                 let _ = state.storage.insert_download(
                     &task_id,
                     track,
@@ -1481,7 +1725,10 @@ async fn download_batch(
 
 #[tauri::command]
 fn saved_playlist_add(state: State<'_, AppState>, playlist: PlaylistRef) -> Result<(), String> {
-    state.storage.save_playlist(&playlist).map_err(|e| e.to_string())
+    state
+        .storage
+        .save_playlist(&playlist)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1498,7 +1745,10 @@ fn saved_playlist_remove(
 
 #[tauri::command]
 fn saved_playlist_list(state: State<'_, AppState>) -> Result<Vec<PlaylistRef>, String> {
-    state.storage.list_saved_playlists().map_err(|e| e.to_string())
+    state
+        .storage
+        .list_saved_playlists()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1565,8 +1815,11 @@ async fn login(
 
     let session = match wanted {
         AuthMethod::Password => {
-            p.login_password(user.as_deref().unwrap_or(""), password.as_deref().unwrap_or(""))
-                .await
+            p.login_password(
+                user.as_deref().unwrap_or(""),
+                password.as_deref().unwrap_or(""),
+            )
+            .await
         }
         AuthMethod::Cookie => p.login_cookie(cookie.as_deref().unwrap_or("")).await,
         AuthMethod::QrCode => Err(tinymusic_core::Error::Unsupported(
@@ -1585,7 +1838,11 @@ async fn login(
 #[tauri::command]
 async fn logout(state: State<'_, AppState>, provider: String) -> Result<(), String> {
     let p = state.provider(&provider)?;
-    if let Some(sess) = state.storage.get_session(&provider).map_err(|e| e.to_string())? {
+    if let Some(sess) = state
+        .storage
+        .get_session(&provider)
+        .map_err(|e| e.to_string())?
+    {
         let _ = p.logout(&sess).await;
     }
     state
@@ -1595,11 +1852,11 @@ async fn logout(state: State<'_, AppState>, provider: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-fn session_get(
-    state: State<'_, AppState>,
-    provider: String,
-) -> Result<Option<Session>, String> {
-    state.storage.get_session(&provider).map_err(|e| e.to_string())
+fn session_get(state: State<'_, AppState>, provider: String) -> Result<Option<Session>, String> {
+    state
+        .storage
+        .get_session(&provider)
+        .map_err(|e| e.to_string())
 }
 
 /// 当前账号的歌单（未登录或平台不支持时返回可读错误）
@@ -1663,12 +1920,13 @@ async fn s3_playlists(state: State<'_, AppState>) -> Result<Vec<S3PlaylistInfo>,
             let prefix = playlist_prefix(&c.config().prefix, &name);
             if let Ok(keys) = c.list_keys(&prefix).await {
                 count = keys.iter().filter(|k| is_audio_key(k)).count() as u32;
-                let lower: Vec<(String, String)> = keys
-                    .iter()
-                    .map(|k| (k.to_lowercase(), k.clone()))
-                    .collect();
+                let lower: Vec<(String, String)> =
+                    keys.iter().map(|k| (k.to_lowercase(), k.clone())).collect();
                 if let Some(first) = keys.iter().find(|k| is_audio_key(k)) {
-                    let stem = first.rsplit_once('.').map(|(a, _)| a).unwrap_or(first.as_str());
+                    let stem = first
+                        .rsplit_once('.')
+                        .map(|(a, _)| a)
+                        .unwrap_or(first.as_str());
                     if let Some(img) = find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"]) {
                         cover = c.presign_get(&img, 6 * 3600).ok();
                     }
@@ -1706,18 +1964,10 @@ fn find_sibling(keys: &[(String, String)], stem: &str, exts: &[&str]) -> Option<
     None
 }
 
-/// 列出某个网盘歌单里的歌曲（音频 + 同名歌词/封面）
-#[tauri::command]
-async fn s3_playlist_tracks(
-    state: State<'_, AppState>,
-    name: String,
-) -> Result<Vec<S3TrackRow>, String> {
-    let client = s3_client(&state)?;
-    let folder = playlist_prefix(&client.normalized_prefix(), &name);
-    let keys = client
-        .list_keys(&folder)
-        .await
-        .map_err(|e| e.to_string())?;
+/// 列出某个网盘歌单里的歌曲（音频 + 同名歌词/封面）。
+async fn list_s3_track_rows(client: &S3, name: &str) -> Result<Vec<S3TrackRow>, String> {
+    let folder = playlist_prefix(&client.normalized_prefix(), name);
+    let keys = client.list_keys(&folder).await.map_err(|e| e.to_string())?;
     let lower: Vec<(String, String)> = keys
         .iter()
         .map(|k| (k.to_lowercase(), k.clone()))
@@ -1739,12 +1989,26 @@ async fn s3_playlist_tracks(
                 artist,
                 cover,
                 availability: Availability::Available,
+                available_qualities: if key.to_ascii_lowercase().ends_with(".flac") {
+                    vec![Quality::Lossless]
+                } else {
+                    Vec::new()
+                },
                 ..Track::default()
             },
         });
     }
     rows.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(rows)
+}
+
+#[tauri::command]
+async fn s3_playlist_tracks(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<Vec<S3TrackRow>, String> {
+    let client = s3_client(&state)?;
+    list_s3_track_rows(&client, &name).await
 }
 
 /// 删除网盘歌单：连同云端文件一起删
@@ -1756,10 +2020,7 @@ async fn s3_playlist_purge(state: State<'_, AppState>, name: String) -> Result<(
     }
     let client = s3_client(&state)?;
     let folder = playlist_prefix(&client.normalized_prefix(), &name);
-    let keys = client
-        .list_keys(&folder)
-        .await
-        .map_err(|e| e.to_string())?;
+    let keys = client.list_keys(&folder).await.map_err(|e| e.to_string())?;
     for key in keys {
         client
             .delete_object(&key)
@@ -1835,10 +2096,11 @@ async fn s3_track_delete(state: State<'_, AppState>, key: String) -> Result<(), 
         .map_err(|e| e.to_string())?;
     let stem = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
     for ext in ["lrc", "jpg", "jpeg", "png", "webp"] {
-        let _ = client
-            .delete_object(&format!("{}.{}", stem, ext))
-            .await;
+        let _ = client.delete_object(&format!("{}.{}", stem, ext)).await;
     }
+    // 从网盘删掉的 S3 曲目，本地「喜欢」也要一起清掉，避免刷新后复活
+    let _ = state.storage.remove_favorite("s3", &key);
+    let _ = push_favorites(&state).await;
     Ok(())
 }
 
@@ -1861,8 +2123,6 @@ fn s3_playlist_create(state: State<'_, AppState>, name: String) -> Result<String
     Ok(name)
 }
 
-
-
 /// 下载一首到临时目录，再上传音频 + 歌词 + 封面，最后清掉临时文件
 async fn upload_track_to_s3(
     state: &AppState,
@@ -1873,7 +2133,7 @@ async fn upload_track_to_s3(
     task_id: &str,
     on_progress: Option<&Channel<Progress>>,
 ) -> Result<String, String> {
-    let ext = ext_for(&info.content_type);
+    let ext = actual_ext(&info);
     let key = object_key(&s3.config().prefix, playlist, track, ext);
 
     let provider = state.provider(&track.provider)?;
@@ -1957,7 +2217,7 @@ async fn s3_download(
     };
 
     let p = state.provider(&track.provider)?;
-    let info = p.resolve(&track.id, q).await.map_err(|e| e.to_string())?;
+    let info = p.resolve(&track, q).await.map_err(|e| e.to_string())?;
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("s3-{}-{}", seq, track.id);
@@ -2026,7 +2286,7 @@ async fn s3_download_batch(
         });
 
         let p = state.provider(&track.provider)?;
-        let info = match p.resolve(&track.id, q).await {
+        let info = match p.resolve(track, q).await {
             Ok(v) => v,
             Err(_) => {
                 failed += 1;
@@ -2036,9 +2296,10 @@ async fn s3_download_batch(
 
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("s3b-{}-{}", seq, track.id);
-        if let Err(e) = state
-            .storage
-            .insert_download(&task_id, track, info.quality, "", 0, "running")
+        if let Err(e) =
+            state
+                .storage
+                .insert_download(&task_id, track, info.quality, "", 0, "running")
         {
             return Err(e.to_string());
         }
@@ -2097,10 +2358,7 @@ async fn s3_import_playlist(
     let p = state.provider(&provider)?;
     let s3 = s3_client(&state)?;
 
-    let detail = p
-        .playlist(&playlist_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let detail = p.playlist(&playlist_id).await.map_err(|e| e.to_string())?;
     let tracks = detail.tracks;
     let total = tracks.len();
     if total == 0 {
@@ -2125,7 +2383,7 @@ async fn s3_import_playlist(
             total: Some(total as u64),
         });
 
-        let info = match p.resolve(&track.id, q).await {
+        let info = match p.resolve(track, q).await {
             Ok(v) => v,
             Err(_) => {
                 failed += 1;
@@ -2135,9 +2393,10 @@ async fn s3_import_playlist(
 
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("imp-{}-{}", seq, track.id);
-        if let Err(e) = state
-            .storage
-            .insert_download(&task_id, track, info.quality, "", 0, "running")
+        if let Err(e) =
+            state
+                .storage
+                .insert_download(&task_id, track, info.quality, "", 0, "running")
         {
             return Err(e.to_string());
         }
@@ -2262,9 +2521,8 @@ pub fn run() {
             let providers: Vec<Arc<dyn MusicProvider>> =
                 vec![Arc::new(KuwoProvider::with_http(http.clone()))];
 
-            let storage = Arc::new(
-                Storage::open(config_dir.join("tinymusic.db")).expect("打开数据库失败"),
-            );
+            let storage =
+                Arc::new(Storage::open(config_dir.join("tinymusic.db")).expect("打开数据库失败"));
             let settings = load_settings(&config_dir);
 
             app.manage(AppState {
@@ -2308,6 +2566,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_providers,
+            quality_capabilities,
+            quality_set,
+            track_qualities,
             search,
             resolve,
             track_detail,

@@ -31,6 +31,7 @@ PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS tracks (
   provider TEXT NOT NULL, id TEXT NOT NULL, title TEXT, artist TEXT, artist_id TEXT,
   album TEXT, album_id TEXT, duration INTEGER, cover TEXT,
+  qualities TEXT, has_advanced INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider, id)
 );
 CREATE TABLE IF NOT EXISTS downloads (
@@ -60,13 +61,30 @@ CREATE TABLE IF NOT EXISTS s3_playlists (
 fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) {
     let exists: i64 = conn
         .query_row(
-            &format!("SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name=?1", table),
+            &format!(
+                "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name=?1",
+                table
+            ),
             [column],
             |r| r.get(0),
         )
         .unwrap_or(0);
     if exists == 0 {
         let _ = conn.execute_batch(ddl);
+    }
+}
+
+/// 一次性数据迁移。用 `PRAGMA user_version` 防止每次启动都改用户数据。
+fn migrate(conn: &Connection) {
+    let v: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if v < 1 {
+        let _ = conn.execute(
+            "UPDATE downloads SET quality='standard' WHERE quality='high'",
+            [],
+        );
+        let _ = conn.pragma_update(None, "user_version", 1);
     }
 }
 
@@ -90,6 +108,19 @@ impl Storage {
             "sort_order",
             "ALTER TABLE s3_playlists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         );
+        ensure_column(
+            &conn,
+            "tracks",
+            "qualities",
+            "ALTER TABLE tracks ADD COLUMN qualities TEXT",
+        );
+        ensure_column(
+            &conn,
+            "tracks",
+            "has_advanced",
+            "ALTER TABLE tracks ADD COLUMN has_advanced INTEGER NOT NULL DEFAULT 0",
+        );
+        migrate(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -104,23 +135,40 @@ impl Storage {
             "sort_order",
             "ALTER TABLE s3_playlists ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
         );
+        ensure_column(
+            &conn,
+            "tracks",
+            "qualities",
+            "ALTER TABLE tracks ADD COLUMN qualities TEXT",
+        );
+        ensure_column(
+            &conn,
+            "tracks",
+            "has_advanced",
+            "ALTER TABLE tracks ADD COLUMN has_advanced INTEGER NOT NULL DEFAULT 0",
+        );
+        migrate(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
 
     pub fn upsert_track(&self, t: &Track) -> Result<()> {
+        let qualities =
+            serde_json::to_string(&t.available_qualities).unwrap_or_else(|_| "[]".into());
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO tracks (provider,id,title,artist,artist_id,album,album_id,duration,cover)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            "INSERT INTO tracks (provider,id,title,artist,artist_id,album,album_id,duration,cover,qualities,has_advanced)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(provider,id) DO UPDATE SET
                title=excluded.title, artist=excluded.artist, artist_id=excluded.artist_id,
                album=excluded.album, album_id=excluded.album_id,
-               duration=excluded.duration, cover=excluded.cover",
+               duration=excluded.duration, cover=excluded.cover,
+               qualities=excluded.qualities, has_advanced=excluded.has_advanced",
             params![
                 t.provider, t.id, t.title, t.artist, t.artist_id,
-                t.album, t.album_id, t.duration_sec, t.cover
+                t.album, t.album_id, t.duration_sec, t.cover,
+                qualities, t.has_advanced as i64
             ],
         )?;
         Ok(())
@@ -148,11 +196,16 @@ impl Storage {
     pub fn list_favorites(&self) -> Result<Vec<Track>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT t.provider,t.id,t.title,t.artist,t.artist_id,t.album,t.album_id,t.duration,t.cover
+            "SELECT t.provider,t.id,t.title,t.artist,t.artist_id,t.album,t.album_id,t.duration,t.cover,t.qualities,t.has_advanced
              FROM favorites f JOIN tracks t ON t.provider=f.provider AND t.id=f.id
              ORDER BY f.added_at DESC",
         )?;
         let rows = stmt.query_map([], |r| {
+            let raw: Option<String> = r.get(9).ok();
+            let available_qualities = raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<Quality>>(s).ok())
+                .unwrap_or_default();
             Ok(Track {
                 provider: r.get(0)?,
                 id: r.get(1)?,
@@ -166,6 +219,8 @@ impl Storage {
                 hot: 0,
                 availability: crate::model::Availability::Unknown,
                 subtitle: None,
+                available_qualities,
+                has_advanced: r.get::<_, i64>(10).unwrap_or(0) != 0,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -262,7 +317,13 @@ impl Storage {
              (provider,user_id,nickname,avatar,cookies,extra,created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![
-                s.provider, s.user_id, s.nickname, s.avatar, cookies, extra, s.created_at
+                s.provider,
+                s.user_id,
+                s.nickname,
+                s.avatar,
+                cookies,
+                extra,
+                s.created_at
             ],
         )?;
         Ok(())
@@ -418,6 +479,12 @@ mod tests {
             availability: crate::model::Availability::Unknown,
             subtitle: None,
             hot: 0,
+            available_qualities: vec![
+                crate::model::Quality::Standard,
+                crate::model::Quality::Super,
+                crate::model::Quality::Lossless,
+            ],
+            has_advanced: true,
         }
     }
 
@@ -430,6 +497,10 @@ mod tests {
         let list = s.list_favorites().unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "稻香");
+        assert!(list[0]
+            .available_qualities
+            .contains(&crate::model::Quality::Lossless));
+        assert!(list[0].has_advanced);
         s.remove_favorite("kuwo", "123").unwrap();
         assert!(!s.is_favorite("kuwo", "123").unwrap());
         assert!(s.list_favorites().unwrap().is_empty());
@@ -439,7 +510,7 @@ mod tests {
     fn downloads_roundtrip() {
         let s = Storage::open_in_memory().unwrap();
         let t = sample();
-        s.insert_download("task1", &t, Quality::High, "/tmp/a.mp3", 0, "running")
+        s.insert_download("task1", &t, Quality::Standard, "/tmp/a.mp3", 0, "running")
             .unwrap();
         s.update_download("task1", "done", 3182050).unwrap();
         let rows = s.list_downloads().unwrap();

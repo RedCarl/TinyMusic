@@ -11,7 +11,8 @@
     seek,
     setVolume,
     setQuality,
-    QUALITY_OPTIONS,
+    currentQualityChoices,
+    refreshTrackQualities,
     playButtonLabel,
     playTrack,
     openLyrics,
@@ -60,9 +61,13 @@
   }
 
   /** 播放器里的「…」菜单：歌词 / 下载 / 音质 / 详情入口都收在这里 */
-  function openMore(e: MouseEvent) {
+  async function openMore(e: MouseEvent) {
     const t = player.current;
     if (!t) return;
+    // 列表没带 MINFO 时先探测一次，避免菜单打开后才变灰
+    if (!player.qualities?.known) {
+      await refreshTrackQualities(t);
+    }
     const downloading = isPending(t);
     openMenuAt(e.clientX, e.clientY, [
       { label: '查看歌词', icon: icons.lyric, run: openLyrics },
@@ -73,11 +78,16 @@
         run: () => void requestDownload([t]),
       },
       { sep: true },
-      ...QUALITY_OPTIONS.map((o) => ({
-        label: `音质 · ${o.label}`,
-        hint: player.quality === o.value ? '当前' : undefined,
-        run: () => void setQuality(o.value),
-      })),
+      {
+        label: '音质',
+        icon: icons.quality,
+        submenu: currentQualityChoices().map((o) => ({
+          label: o.label,
+          selected: o.current,
+          disabled: o.disabled,
+          run: () => void setQuality(o.value),
+        })),
+      },
       { sep: true },
       { label: '歌曲详情', icon: icons.disc, run: () => go({ name: 'track', track: t }) },
       ...(t.album_id
@@ -192,7 +202,7 @@
   oncontextmenu={(e) => {
     e.preventDefault();
     e.stopPropagation();
-    openMore(e);
+    void openMore(e);
   }}
 >
   <div class="transport">
@@ -278,7 +288,12 @@
     </button>
 
     <div class="meta">
-      <div class="t">{player.current?.title ?? '未在播放'}</div>
+      <div class="t">
+        {player.current?.title ?? '未在播放'}
+        {#if player.actualLabel}
+          <span class="qchip" class:degraded={player.degraded}>{player.actualLabel}</span>
+        {/if}
+      </div>
       <div class="a">
         {#if player.error}
           <span class="err">{player.error.includes('会员') || player.error.includes('unavailable')

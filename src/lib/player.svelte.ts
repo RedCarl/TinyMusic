@@ -1,4 +1,5 @@
-import { api, type LyricLine, type Quality, type Track } from './api';
+import { api, formatLabel, qualityLabel, type AudioFormat, type LyricLine, type PlayerSource, type Quality, type QualityCapability, type Track, type TrackQualities } from './api';
+import { QUALITY_ORDER, qualityChoices } from './quality';
 
 /** 播放状态：播放按钮据此显示「播放 / 暂停 / 继续播放 / 加载中」 */
 export type PlayStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'ended' | 'error';
@@ -6,18 +7,11 @@ export type PlayStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'ended' | '
 /** 循环方式：不循环 / 列表循环 / 单曲循环 */
 export type RepeatMode = 'off' | 'all' | 'one';
 
-/** 音质选项（顺序即 UI 顺序） */
-export const QUALITY_OPTIONS: { value: Quality; label: string }[] = [
-  { value: 'standard', label: '标准' },
-  { value: 'high', label: '高品' },
-  { value: 'super', label: '超高' },
-];
-
-/** 无损档实测拿不到完整音频，已从产品里移除；旧配置里残留下就退回超高 */
+/** 旧配置迁移：high 实际是 128k，映射到 standard。 */
 function normalizeQuality(raw: string): Quality {
-  if (raw === 'lossless') return 'super';
-  if (raw === 'standard' || raw === 'high' || raw === 'super') return raw;
-  return 'high';
+  if (raw === 'high') return 'standard';
+  if ((QUALITY_ORDER as string[]).includes(raw)) return raw as Quality;
+  return 'super';
 }
 
 function readLS(key: string): string {
@@ -63,7 +57,17 @@ export const player = $state({
   progress: 0, // 秒
   duration: 0, // 秒
   volume: 1,
-  quality: normalizeQuality(readLS('quality')) as Quality,
+  quality: normalizeQuality(readLS('quality')),
+  /** 当前实际档位（可能因服务端降级而不同于 player.quality） */
+  actualQuality: 'standard' as Quality | 'original',
+  actualFormat: null as AudioFormat | null,
+  actualLabel: '',
+  degraded: false,
+  /** 全局六档能力（后三档当前不可用） */
+  capabilities: [] as QualityCapability[],
+  /** 当前曲目的可播档位探测结果 */
+  qualities: null as TrackQualities | null,
+  qualitiesLoading: false,
   error: '' as string,
   /** 随机播放（和循环相互独立，和 Apple Music 一致） */
   shuffle: readShuffle(),
@@ -93,6 +97,92 @@ const lyricCache = new Map<string, LyricLine[]>();
 /** App.svelte 注册音频元素的桥接 */
 export function bindAudio(fn: Listener) {
   listener = fn;
+}
+
+export function setPreferredQuality(raw: string) {
+  player.quality = normalizeQuality(raw);
+}
+
+export async function loadQualityCapabilities() {
+  try {
+    player.capabilities = await api.qualityCapabilities();
+  } catch {
+    /* 取不到能力时按默认三档处理 */
+  }
+}
+
+function applySource(src: PlayerSource) {
+  player.src = src.url;
+  player.actualQuality = src.quality === 'original' ? 'original' : (src.quality as Quality);
+  player.actualFormat = src.format;
+  const actual = formatLabel(src.format) || qualityLabel(src.quality);
+  player.actualLabel =
+    src.quality === 'original'
+      ? '原文件'
+      : src.verified || src.via === 's3'
+        ? actual
+        : `${actual}（未校验）`;
+  player.degraded = src.degraded;
+}
+
+let qualityToken = 0;
+
+/** 探测当前曲目可播档位；列表已带 MINFO 时直接用。 */
+export async function refreshTrackQualities(track: Track | null) {
+  if (!track) {
+    player.qualities = null;
+    return;
+  }
+  if (track.provider === 's3') {
+    player.qualities = {
+      available: track.available_qualities ?? [],
+      has_advanced: false,
+      known: true,
+    };
+    return;
+  }
+  if ((track.available_qualities?.length ?? 0) > 0) {
+    player.qualities = {
+      available: track.available_qualities ?? [],
+      has_advanced: !!track.has_advanced,
+      known: true,
+    };
+    return;
+  }
+
+  const token = ++qualityToken;
+  player.qualitiesLoading = true;
+  try {
+    const q = await api.trackQualities(track);
+    if (token === qualityToken) player.qualities = q;
+  } catch {
+    if (token === qualityToken) {
+      player.qualities = {
+        available: [],
+        has_advanced: !!track.has_advanced,
+        known: false,
+      };
+    }
+  } finally {
+    if (token === qualityToken) player.qualitiesLoading = false;
+  }
+}
+
+/** 当前曲目的 6 项音质选择（含禁用原因）。 */
+export function currentQualityChoices() {
+  return qualityChoices(player.current, player.capabilities, player.qualities, player.quality);
+}
+
+/**
+ * 某些 WebView 不支持 FLAC（或直链被拒）时，退回 320k，避免直接黑屏报错。
+ * 返回 false 表示当前曲目没有可用的 320k 备选。
+ */
+export async function fallbackFromLossless(): Promise<boolean> {
+  if (player.quality !== 'lossless') return false;
+  const choice = currentQualityChoices().find((c) => c.value === 'super');
+  if (!choice || choice.disabled) return false;
+  await setQuality('super');
+  return player.quality === 'super';
 }
 
 function setStatus(s: PlayStatus) {
@@ -283,20 +373,28 @@ export function cycleRepeat() {
   setRepeat(player.repeat === 'off' ? 'all' : player.repeat === 'all' ? 'one' : 'off');
 }
 
-/** 切换音质：持久化 + 若正在播放则按新音质重新取流（保持进度） */
+/** 切换音质：持久化 + 若正在播放则按新音质重新取流（保持进度）。 */
 export async function setQuality(q: Quality) {
+  const choice = currentQualityChoices().find((c) => c.value === q);
+  if (!choice || choice.disabled) return;
+
+  try {
+    await api.qualitySet(q);
+  } catch (e) {
+    player.error = String(e);
+    return;
+  }
   player.quality = q;
-  writeLS('quality', q);
+
   const t = player.current;
   if (!t) return;
   const at = player.progress;
   const wasPlaying = player.status === 'playing';
   try {
     setStatus('loading');
-    const src = await api.playerOpen(t.provider, t.id, q);
-    player.src = src.url;
+    const src = await api.playerOpen(t, q, false);
+    applySource(src);
     listener?.('load');
-    // 恢复播放位置：等 metadata 就绪后再 seek
     setTimeout(() => {
       listener?.('seek', at);
       if (wasPlaying) {
@@ -307,9 +405,26 @@ export async function setQuality(q: Quality) {
       }
     }, 260);
     player.error = '';
-  } catch (e) {
-    player.error = String(e);
-    setStatus('error');
+  } catch {
+    // 缓存里可能是过期直链，强制刷新再试一次
+    try {
+      const src = await api.playerOpen(t, q, true);
+      applySource(src);
+      listener?.('load');
+      setTimeout(() => {
+        listener?.('seek', at);
+        if (wasPlaying) {
+          listener?.('play');
+          setStatus('playing');
+        } else {
+          setStatus('paused');
+        }
+      }, 260);
+      player.error = '';
+    } catch (e2) {
+      player.error = String(e2);
+      setStatus('error');
+    }
   }
 }
 
@@ -330,14 +445,25 @@ async function startAt(i: number, fromSec = 0) {
   player.progress = resume ? fromSec : 0;
   player.duration = track.duration_sec || 0;
   player.src = '';
+  player.actualLabel = '';
+  player.actualFormat = null;
+  player.degraded = false;
+  player.qualities = null;
   setStatus('loading');
   persistPlayback(true);
   void loadLyrics(track);
+  void refreshTrackQualities(track);
 
   try {
-    const src = await api.playerOpen(track.provider, track.id, player.quality);
+    let src: PlayerSource;
+    try {
+      src = await api.playerOpen(track, player.quality, false);
+    } catch {
+      // 直链可能是缓存里的过期地址，强制刷新一次
+      src = await api.playerOpen(track, player.quality, true);
+    }
     if (token !== playToken) return; // 已经被更新的点击顶替
-    player.src = src.url;
+    applySource(src);
     pendingSeek = resume ? fromSec : null;
     listener?.('load');
     if (resume) {

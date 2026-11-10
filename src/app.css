@@ -925,11 +925,12 @@ footer {
 /* 没有 h1 的页面（下载记录）用第一行 summary 当页头 */
 .page > .summary:first-child {
   gap: 10px;
-  padding: 4px 0 12px;
+  padding: 0 0 14px;
   color: var(--fg);
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.018em;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.24;
 }
 
 .page > .summary:first-child button {
@@ -1276,6 +1277,15 @@ button.primary {
 
 .badge.mute {
   color: var(--fg3);
+}
+
+/* 列表里的无损标记：淡金，和会员/试听提醒区分开 */
+.badge.sq {
+  background-color: color-mix(in oklch, oklch(0.78 0.12 85) 16%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, oklch(0.78 0.12 85) 35%, transparent),
+    inset 0 0 0 1px color-mix(in oklch, oklch(0.78 0.12 85) 28%, transparent);
+  color: oklch(0.72 0.1 85);
 }
 
 .badge.ok {
@@ -1962,6 +1972,11 @@ button.primary {
   font-style: normal;
 }
 
+.radio.off {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .ok {
   margin-left: 10px;
   color: var(--success);
@@ -2223,6 +2238,24 @@ button.primary {
 }
 
 .meta .err {
+  color: var(--warn);
+}
+
+/* 播放器里的实际音质小徽标 */
+.qchip {
+  margin-left: 7px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background-color: oklch(1 0 0 / 16%);
+  color: var(--bar-ink);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+}
+
+.qchip.degraded {
+  background-color: color-mix(in oklch, var(--warn) 25%, transparent);
   color: var(--warn);
 }
 
@@ -3005,6 +3038,12 @@ button.primary {
   background-color: var(--hover);
 }
 
+/* 当前音质：用按钮背景表示，不用勾选图标 */
+.ctx-item.selected,
+.ctx-item.selected:hover:not(:disabled) {
+  background-color: var(--hover);
+}
+
 .ctx-item:disabled {
   opacity: 0.45;
   cursor: default;
@@ -3037,6 +3076,31 @@ button.primary {
   flex: none;
   color: var(--fg3);
   font-size: 11px;
+}
+
+/* 二级菜单：悬停“音质”向右展开；右侧放不下时向左 */
+.ctx-sub-wrap {
+  position: relative;
+}
+
+.ctx-arrow {
+  flex: none;
+  color: var(--fg3);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ctx-submenu {
+  position: fixed;
+  z-index: 92;
+  min-width: 176px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  visibility: hidden;
+}
+
+.ctx-submenu.ready {
+  visibility: visible;
 }
 
 .ctx-sep {
@@ -3518,8 +3582,15 @@ button.primary {
 }
 
 .cloud-top h1 {
+  min-width: 0;
   margin: 0;
-  font-size: 20px;
+  overflow: hidden;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  line-height: 1.24;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cloud-top-actions {

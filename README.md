@@ -16,7 +16,8 @@ tinymusic/
 │  ├─ src/
 │  │  ├─ kwjson.rs           # 酷我「伪 JSON」递归下降解析器
 │  │  ├─ text.rs             # 多层转义 + HTML 实体清洗
-│  │  ├─ http.rs             # 限速 / 退避重试 / 软限流识别
+│  │  ├─ http.rs             # 限速 / 退避重试 / 软限流识别 / 流探测
+│  │  ├─ quality.rs          # 音质能力解析、文件头/时长校验、实际格式
 │  │  ├─ providers/kuwo/     # 端点、字段映射、占位识别、音质降级
 │  │  ├─ proxy.rs            # 本地流代理（Range 透传，手写 HTTP/1.1）
 │  │  ├─ download.rs         # 流式下载 + 校验 + 文件名清洗
@@ -25,7 +26,7 @@ tinymusic/
 │  └─ tests/
 │     ├─ fixtures/           # 真实响应样本
 │     └─ live.rs             # 联网集成测试（#[ignore]）
-├─ src-tauri/                # Tauri 外壳：16 个 IPC 命令 + 状态装配
+├─ src-tauri/                # Tauri 外壳：IPC 命令 + 状态装配
 └─ src/                      # Svelte 5 前端
 ```
 
@@ -82,9 +83,10 @@ CDN 直链**无需任何 header**，**支持 Range（206）**，所以本地代�
 1. **搜索返回的不是 JSON**，而是 Python dict 字面量（单引号、未加引号的整数）。
    `core/src/kwjson.rs` 实现了递归下降解析器；不能靠「替换引号」糊弄，
    因为值里存在 `&apos;`、`&nbsp;` 和四层反斜杠（`\\\\u0026`）。
-2. **匿名档位封在 128k**。请求 `320kmp3` / `2000kflac` 时，服务端对受限曲返回
+2. **`anti.s` 匿名档位封在 128k**。请求 `320kmp3` / `2000kflac` 时，服务端对受限曲返回
    一个**固定占位文件**：181,521 字节 / 11.311 秒 / 路径含 `588957081` /
    md5 `43fe5f6460e49afdf0bc2340012fe7b5`。而且这是**按 (歌曲, 音质) 确定性**返回的。
+   绕过它的是资源管理链路（`trackmedia`）：匿名可拿 320k / FLAC，结果仍要做文件头和时长校验。
 3. **`payInfo` 不可信**。稻香的 `down='1111'`（四档全允许）实测仍只给占位。
    所以可用性只能以「实际取链 + 大小/时长校验」为准 —— 这就是 `is_placeholder()` 的三级判定。
 
@@ -106,7 +108,28 @@ CDN 直链**无需任何 header**，**支持 Range（206）**，所以本地代�
 | `preview_only` | 能取到但只是片段 | 黄色「仅试听」徽标 |
 | `unavailable` | 会员专享 / 已下架 / 取链失败 | 置灰，按钮禁用 |
 
-详情页提供「测 128k / 测 320k / 测无损」三个探测按钮，用真实结果告诉你哪一档能拿到。
+详情页提供六档探测按钮：128k / 320k / FLAC 可点，Hi-Res / 杜比全景声 / 母带直接灰色禁用；
+列表接口的 `MINFO` 能判断某首曲子有没有 FLAC，没有就禁用无损，不让用户点了才失败。
+
+---
+
+## 音质档位与真实格式
+
+| 档位 | wire | 目标 | 当前状态 |
+|---|---|---|---|
+| 标准 128k | `standard` | 128k 有损 | 可播 |
+| 高品质 320k | `super` | 320k 有损 | 可播 |
+| 无损 FLAC | `lossless` | FLAC 16/44.1 起 | 按曲目可播 |
+| Hi-Res | `hires` | 高解析度 | 灰色，需会员 + 加密解密 |
+| 杜比全景声 | `atmos` | 空间音频 | 灰色，需会员 + 加密解密 |
+| 母带 | `master` | 母带级 | 灰色，需会员 + 加密解密 |
+
+- 列表接口的 `MINFO` 决定某首曲目有没有无损；有就显示「无损」徽标，没有就禁用该档。
+- 实际播放档位由文件头（`fLaC` / MP3 frame）+ 字节数/时长校验得出，**不直接相信请求参数**；
+  请求无损但只拿到 320 时，UI 显示实际格式并标「已降级」。
+- 后三档在酷我目录里存在（`ZPGA*` / `ZPLY` / `DTSX` / `BCMS` / `MNAC*` 等），
+  但匿名公开接口只返回占位文件或明文 FLAC，拿不到加密 URL/ekey，所以当前不提供可选项。
+  实测记录见 [docs/酷我音质调研.md](docs/酷我音质调研.md)。
 
 ---
 
@@ -115,11 +138,14 @@ CDN 直链**无需任何 header**，**支持 Range（206）**，所以本地代�
 ```rust
 get_providers()                                  // 平台列表
 search(provider, kw, page, limit)                // 搜索
-resolve(provider, id, quality)                   // 取流（含降级）
+resolve(track, quality)                          // 取流（含降级/实际格式）
+quality_capabilities()                           // 六档能力（后三档不可用）
+track_qualities(track)                           // 单曲可播档位探测
+quality_set(quality)                             // 只改默认音质
 track_detail(provider, track)                    // 详情 + 歌词
 artist(provider, artist_id, name, page)          // 艺人页
 album(provider, album_id, name, page)            // 专辑页
-player_open(provider, id, quality)               // → 本地代理 URL
+player_open(track, quality, force_refresh)       // → 本地代理 URL（含实际格式）
 download_start(track, quality, channel)          // 下载（进度走 Channel）
 download_list()                                  // 下载记录
 favorite_add/remove/list/check                   // 收藏
@@ -157,7 +183,7 @@ hide_to_tray()                                   // 收进托盘
 - 中间：封面 + 曲名·歌手，下方一条**细进度线**；悬停线条才出现滑块和时间，
   点击/拖动可跳转，平时不占横向空间
 - 右侧三个键：歌词 / 播放列表（带曲目数徽标）/ 音量
-- 下载、音质（标准 / 高品 / 超高）、歌曲详情、专辑和歌手入口放在**播放器右键菜单**里（不再单列「…」按钮）
+- 下载、音质（六档，当前仅 128k / 320k / FLAC 可点，其余灰色）、歌曲详情、专辑和歌手入口放在**播放器右键菜单**里（不再单列「…」按钮）
 - 播放列表面板不再重复放随机/循环开关，播放顺序统一由播放器左侧的两个键控制；面板出现/收起带过渡，点空白关闭，没有黑色遮罩
 
 **随机和循环是两个独立开关**，和 Apple Music 一致：

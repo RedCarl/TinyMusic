@@ -11,6 +11,10 @@
     restoreVolume,
     onEnded,
     toggle,
+    loadQualityCapabilities,
+    setPreferredQuality,
+    refreshTrackQualities,
+    fallbackFromLossless,
     next,
     prev,
     syncPlayback,
@@ -36,6 +40,7 @@
   import Lyrics from './routes/Lyrics.svelte';
   import { appCfg, refreshAppCfg } from './lib/config.svelte';
   import { account } from './lib/account.svelte';
+  import { showToast } from './lib/toast.svelte';
 
   let audio = $state<HTMLAudioElement | null>(null);
   let mainEl = $state<HTMLElement | null>(null);
@@ -83,20 +88,45 @@
 
   let bootErr = $state('');
 
+  /** 播放失败：FLAC 不被 WebView 支持时自动退回 320k，其余错误照实显示 */
+  async function handlePlayError(err: unknown) {
+    const name = (err as DOMException)?.name;
+    if (name === 'NotSupportedError' && (await fallbackFromLossless())) {
+      showToast('当前系统不支持 FLAC，已切到 320k');
+      player.error = '';
+      return;
+    }
+    player.error = '播放失败：' + String(err);
+    player.status = 'error';
+    player.playing = false;
+  }
+
   onMount(() => {
     restoreVolume();
-    // 让播放/下载用的是后端保存的音质设置
-    import('./lib/api').then(({ api: a }) =>
-      a
-        .settingsGet()
-        .then((s) => {
-          const q = s.default_quality === 'lossless' ? 'super' : s.default_quality;
-          localStorage.setItem('quality', q);
-          // 网盘启用时把云端的「喜欢」拉回来合并
-          if (s.s3_enabled && s.s3_bucket) a.favoritesPull().catch(() => {});
-        })
-        .catch(() => {})
-    );
+    void loadQualityCapabilities();
+    // 音质以后端设置为准；旧 localStorage 只做一次性迁移（high 实际是 128k）
+    import('./lib/api').then(async ({ api: a }) => {
+      try {
+        const s = await a.settingsGet();
+        const legacy = localStorage.getItem('quality');
+        if (legacy) {
+          const mapped = legacy === 'high' ? 'standard' : legacy;
+          try {
+            await a.qualitySet(mapped as never);
+            setPreferredQuality(mapped);
+          } catch {
+            setPreferredQuality(s.default_quality);
+          }
+          localStorage.removeItem('quality');
+        } else {
+          setPreferredQuality(s.default_quality);
+        }
+        if (s.s3_enabled && s.s3_bucket) a.favoritesPull().catch(() => {});
+      } catch {
+        /* 后端不可用时保持默认 */
+      }
+    });
+    if (player.current) void refreshTrackQualities(player.current);
     refreshAppCfg().then((s) => {
       if (s?.s3_enabled && s.s3_bucket) api.favoritesPull().catch(() => {});
     });
@@ -109,11 +139,7 @@
           el.load();
           break;
         case 'play':
-          el.play().catch((e) => {
-            player.error = '播放失败：' + String(e);
-            player.status = 'error';
-            player.playing = false;
-          });
+          el.play().catch((e) => void handlePlayError(e));
           break;
         case 'pause':
           el.pause();
@@ -311,11 +337,7 @@
           /* ignore */
         }
         player.progress = target;
-        a.play().catch((err) => {
-          player.error = '播放失败：' + String(err);
-          player.status = 'error';
-          player.playing = false;
-        });
+        a.play().catch((err) => void handlePlayError(err));
       }
       persistPlayback(true);
     }}

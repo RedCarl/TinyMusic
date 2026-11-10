@@ -85,8 +85,7 @@ impl HttpClient {
             match self.client.get(url).send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || status.is_server_error()
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
                     {
                         drop(_permit);
                         if attempt >= 4 {
@@ -154,8 +153,7 @@ impl HttpClient {
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || status.is_server_error()
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
                     {
                         drop(_permit);
                         if attempt >= 4 {
@@ -194,8 +192,7 @@ impl HttpClient {
             match self.client.get(url).send().await {
                 Ok(resp) => {
                     let status = resp.status();
-                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                        || status.is_server_error()
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
                     {
                         drop(_permit);
                         if attempt >= 4 {
@@ -242,6 +239,55 @@ impl HttpClient {
             status,
             bytes: len,
             content_type: ct,
+            head: Vec::new(),
+        })
+    }
+
+    /// 取流探测：GET + `Range: bytes=0-65535`，一次拿到 Content-Type、
+    /// 总大小（Content-Length / Content-Range）和前 64KB 文件头。
+    ///
+    /// HEAD 在部分 CDN 上会 405，或者不给 Content-Type；这个接口更稳。
+    pub async fn probe_stream(&self, url: &str) -> Result<ProbeInfo> {
+        let resp = self
+            .client
+            .get(url)
+            .header(reqwest::header::RANGE, "bytes=0-65535")
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        let ct = headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = if status == 206 {
+            headers
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.rsplit('/').next())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        } else {
+            headers
+                .get(reqwest::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        };
+
+        let mut head = Vec::with_capacity(8192);
+        let mut resp = resp;
+        while head.len() < 65_536 {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => head.extend_from_slice(&chunk),
+                _ => break,
+            }
+        }
+
+        Ok(ProbeInfo {
+            status,
+            bytes,
+            content_type: ct,
+            head,
         })
     }
 
@@ -265,4 +311,6 @@ pub struct ProbeInfo {
     pub status: u16,
     pub bytes: Option<u64>,
     pub content_type: String,
+    /// 前 64KB 原始字节，用于识别 FLAC/OGG/MP3 文件头
+    pub head: Vec<u8>,
 }
