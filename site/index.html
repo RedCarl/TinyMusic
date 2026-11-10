@@ -345,6 +345,20 @@ h1 em {
 }
 .hint a:hover { color: var(--fg); }
 
+.hint + .hint { margin-top: 6px; }
+
+.linkbtn {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.linkbtn:hover { color: var(--fg); }
+
 footer {
   padding: 28px 0 48px;
   font-size: 12px;
@@ -463,6 +477,11 @@ footer a:hover { color: var(--fg); }
       </div>
 
       <p class="hint">
+        <span id="dl-route">下载经由 gh-proxy.com 镜像加速</span> ·
+        <button class="linkbtn" id="mode" type="button">改用 GitHub 直连</button>
+      </p>
+
+      <p class="hint">
         macOS 首次打开若提示「已损坏」，在 Finder 里右键 → 打开。
         全部历史版本见 <a href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">GitHub Releases</a>。
       </p>
@@ -482,6 +501,47 @@ footer a:hover { color: var(--fg); }
 (function () {
   var REPO = "RedCarl/TinyMusic";
   var LATEST = "https://github.com/" + REPO + "/releases/latest";
+
+  /* 下载加速：只给 /releases/download/ 的附件直链加前缀，
+     releases 页面之类的 HTML 链接保持原样。 */
+  var MIRROR = "https://gh-proxy.com/";
+  var mode = "mirror";
+  var links = [];
+
+  function accel(url) {
+    return /\/releases\/download\//.test(url) ? MIRROR + url : url;
+  }
+
+  function bind(el, url) {
+    if (!el || !url) return;
+    for (var i = 0; i < links.length; i++) {
+      if (links[i].el === el) {
+        links[i].direct = url;
+        el.href = mode === "mirror" ? accel(url) : url;
+        return;
+      }
+    }
+    links.push({ el: el, direct: url });
+    el.href = mode === "mirror" ? accel(url) : url;
+  }
+
+  function applyMode() {
+    links.forEach(function (l) {
+      l.el.href = mode === "mirror" ? accel(l.direct) : l.direct;
+    });
+    var btn = document.getElementById("mode");
+    if (btn) btn.textContent = mode === "mirror" ? "改用 GitHub 直连" : "改用镜像加速";
+    var route = document.getElementById("dl-route");
+    if (route) route.textContent = mode === "mirror" ? "下载经由 gh-proxy.com 镜像加速" : "下载直连 GitHub";
+  }
+
+  var modeBtn = document.getElementById("mode");
+  if (modeBtn) {
+    modeBtn.addEventListener("click", function () {
+      mode = mode === "mirror" ? "direct" : "mirror";
+      applyMode();
+    });
+  }
 
   function size(bytes) {
     if (!bytes) return "";
@@ -521,8 +581,9 @@ footer a:hover { color: var(--fg); }
 
   function fill(key, asset) {
     if (!asset) return;
+    var url = asset.browser_download_url;
     document.querySelectorAll('[data-asset="' + key + '"]').forEach(function (a) {
-      a.href = asset.browser_download_url;
+      bind(a, url);
     });
     var name = document.querySelector('[data-file="' + key + '"]');
     if (name) name.textContent = asset.name;
@@ -553,13 +614,13 @@ footer a:hover { color: var(--fg); }
         var hero = document.getElementById("hero-dl");
         var label = document.getElementById("hero-dl-label");
         if (guess === "windows" && exe) {
-          hero.href = exe.browser_download_url;
+          bind(hero, exe.browser_download_url);
           label.textContent = "下载 Windows 版";
         } else if (guess === "mac" && (arm || intel)) {
-          hero.href = (arm || intel).browser_download_url;
+          bind(hero, (arm || intel).browser_download_url);
           label.textContent = "下载 macOS 版";
         } else {
-          hero.href = rel.html_url || LATEST;
+          bind(hero, rel.html_url || LATEST);
         }
       }
     })
