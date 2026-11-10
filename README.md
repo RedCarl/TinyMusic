@@ -6,6 +6,8 @@
 > 设计立场：**宁可显示「不可用」，也不假装能播。**
 > 未授权曲目会明确标注并置灰，不会卡在「正在搜索」。
 
+**[官网 / 下载](https://redcarl.github.io/TinyMusic/)** —— Windows、macOS 安装包都在这一页，不用翻 Releases。
+
 ---
 
 ## 目录结构
