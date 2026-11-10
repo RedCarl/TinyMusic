@@ -778,6 +778,12 @@ aside {
   padding-top: 4px;
 }
 
+/* 侧栏第一项从标题栏下面 4px 开始，内容框的顶边也收到 4px，
+   两列才是从同一条线起头（原来差 4px，看着有个小台阶） */
+:root[data-chrome='custom'] main {
+  margin-top: 4px;
+}
+
 .titlebar {
   grid-area: titlebar;
   display: flex;
@@ -876,11 +882,21 @@ aside nav button {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: var(--r-sm);
   color: var(--fg2);
   font-size: 13.5px;
   text-align: left;
+}
+
+/* 设置项上的小红点：只是「有新版」的提示，不写版本号、不闪不动 */
+aside nav button .nav-dot {
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background-color: var(--danger);
 }
 
 /* 指针停在哪一项，就先给它一层很淡的底 */
@@ -906,7 +922,7 @@ aside nav button.on .ico {
 }
 
 .nav-sep {
-  height: 10px;
+  height: 6px;
   flex: none;
 }
 
@@ -1045,7 +1061,10 @@ footer {
 
 .page {
   padding: 24px 32px 40px;
-  max-width: 1140px;
+  /* 窗口拉宽时内容跟着长，但长到 1600 就停；再多出来的宽度由 margin auto
+     平分到左右，而不是全堆在右边变成一块死白。 */
+  max-width: 1600px;
+  margin-inline: auto;
   animation: page-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1322,7 +1341,7 @@ button.primary {
 }
 
 .ttl {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 14px;
   overflow: hidden;

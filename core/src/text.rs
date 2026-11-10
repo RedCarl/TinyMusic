@@ -137,6 +137,73 @@ fn collapse_ws(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// 解析 LRC 文本 → 歌词行。
+///
+/// 同一句可以挂多个时间戳（`[00:12.00][01:20.00]副歌`），
+/// 网易云返回的歌词就是这样；`[ti:]`/`[ar:]` 这类元信息标签会被跳过。
+pub fn parse_lrc(text: &str) -> Vec<crate::model::LyricLine> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let mut rest = raw.trim();
+        let mut stamps: Vec<u32> = Vec::new();
+        while let Some(tail) = rest.strip_prefix('[') {
+            let Some(end) = tail.find(']') else { break };
+            let tag = &tail[..end];
+            match tag.split_once(':').and_then(|(m, s)| {
+                let m: f64 = m.trim().parse().ok()?;
+                let s: f64 = s.trim().parse().ok()?;
+                Some(m * 60_000.0 + s * 1000.0)
+            }) {
+                Some(ms) => {
+                    stamps.push(ms.max(0.0) as u32);
+                    rest = &tail[end + 1..];
+                }
+                // `[ti:晴天]` 之类：不是时间戳，整行忽略
+                None => break,
+            }
+        }
+        if stamps.is_empty() {
+            continue;
+        }
+        let line = rest.trim();
+        if line.is_empty() {
+            continue;
+        }
+        for ms in stamps {
+            out.push(crate::model::LyricLine {
+                time_ms: ms,
+                text: line.to_string(),
+            });
+        }
+    }
+    out.sort_by_key(|l| l.time_ms);
+    out
+}
+
+#[cfg(test)]
+mod lyric_tests {
+    use super::parse_lrc;
+
+    #[test]
+    fn parses_multi_stamp_and_skips_meta() {
+        let lrc = "[ti:Test]\n[ar:Someone]\n[00:01.50]first\n[00:03.00][00:09.25]chorus\n";
+        let lines = parse_lrc(lrc);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].time_ms, 1500);
+        assert_eq!(lines[0].text, "first");
+        assert_eq!(lines[1].time_ms, 3000);
+        assert_eq!(lines[2].time_ms, 9250);
+        assert_eq!(lines[2].text, "chorus");
+    }
+
+    #[test]
+    fn empty_and_garbage_are_safe() {
+        assert!(parse_lrc("").is_empty());
+        assert!(parse_lrc("纯文本没有时间戳").is_empty());
+        assert!(parse_lrc("[99:99.99]").is_empty()); // 空歌词行不计入
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

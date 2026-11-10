@@ -1141,7 +1141,10 @@ impl MusicProvider for KuwoProvider {
 
     fn features(&self) -> ProviderFeatures {
         // 酷我有账号级「喜欢」（type=MYFAVORITE 的歌单）
-        ProviderFeatures { favorites: true }
+        ProviderFeatures {
+            favorites: true,
+            recommend: false,
+        }
     }
 
     /// 酷我的登录能力如实声明：两条路都被服务端挡住，这里不放假登录框。

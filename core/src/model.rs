@@ -389,6 +389,16 @@ pub trait MusicProvider: Send + Sync {
         Err(crate::Error::Unsupported("该平台不支持账号收藏".into()))
     }
 
+    /// 「每日推荐歌曲」之类的个性化推荐。需要登录态，未登录应返回可读错误。
+    async fn recommend_songs(&self, _limit: u32) -> crate::Result<Vec<Track>> {
+        Err(crate::Error::Unsupported("该平台不提供每日推荐".into()))
+    }
+
+    /// 「推荐歌单」。多数平台匿名也能拿到，有登录态时更个性化。
+    async fn recommend_playlists(&self) -> crate::Result<Vec<PlaylistRef>> {
+        Err(crate::Error::Unsupported("该平台不提供推荐歌单".into()))
+    }
+
     /// 按平台用户 id 列出其歌单。
     ///
     /// 酷我的 `pl.svc?op=getuserlist` 只需要 uid，不需要登录，
@@ -431,6 +441,12 @@ pub trait MusicProvider: Send + Sync {
     async fn logout(&self, _session: &Session) -> crate::Result<()> {
         Ok(())
     }
+
+    /// 把已持久化的会话注入 provider。
+    ///
+    /// 需要 cookie 才有意义的平台（网易云）在启动时由外壳调用一次，
+    /// 否则「重启后仍需重新登录」。默认实现忽略。
+    fn set_session(&self, _session: &Session) {}
 }
 
 // ============ 歌单 ============
@@ -523,6 +539,9 @@ impl AuthCapability {
 pub struct ProviderFeatures {
     /// 平台是否提供账号级的「喜欢」集合
     pub favorites: bool,
+    /// 平台是否提供「每日推荐 / 推荐歌单」入口
+    #[serde(default)]
+    pub recommend: bool,
 }
 
 /// 通用会话。跨平台一致，平台私有字段放 `extra`。

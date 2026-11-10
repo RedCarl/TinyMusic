@@ -1,4 +1,5 @@
 import type { Track } from './api';
+import { hasNetease } from './account.svelte';
 
 /**
  * 路由表。
@@ -9,6 +10,7 @@ import type { Track } from './api';
  */
 export type Route =
   | { name: 'search'; kw?: string }
+  | { name: 'recommend' }
   | { name: 'playlist'; provider: string; playlistId: string; title: string }
   | { name: 'track'; track: Track }
   | { name: 'artist'; provider: string; artistId: string; title: string }
@@ -23,6 +25,7 @@ export type Route =
 /** 侧边栏一级页面：进入时清空返回栈 */
 const TOP_LEVEL: ReadonlySet<Route['name']> = new Set([
   'search',
+  'recommend',
   'account',
   'downloads',
   'cloud',
@@ -30,8 +33,17 @@ const TOP_LEVEL: ReadonlySet<Route['name']> = new Set([
   'settings'
 ]);
 
+/**
+ * 起始页：登录网易云之后「推荐」就是首页，没登录才落到搜索。
+ *
+ * 放在模块初始化里算，而不是 onMount 再跳 —— 后者会先闪一下搜索页。
+ */
+function initialRoute(): Route {
+  return hasNetease() ? { name: 'recommend' } : { name: 'search' };
+}
+
 export const router = $state<{ route: Route; history: Route[] }>({
-  route: { name: 'search' },
+  route: initialRoute(),
   history: []
 });
 

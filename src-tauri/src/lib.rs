@@ -15,6 +15,7 @@ use tinymusic_core::download::{build_filename, build_lrc, DownloadExtras, Downlo
 use tinymusic_core::http::HttpClient;
 use tinymusic_core::model::*;
 use tinymusic_core::providers::kuwo::KuwoProvider;
+use tinymusic_core::providers::netease::{NeteaseProvider, PlayMode};
 use tinymusic_core::proxy::StreamProxy;
 use tinymusic_core::s3::{S3Config, S3};
 use tinymusic_core::storage::{DownloadRow, Storage};
@@ -52,6 +53,16 @@ pub struct Settings {
     // ---- 窗口 / 托盘 ----
     #[serde(default = "default_true")]
     pub close_to_tray: bool,
+
+    // ---- 网易云（目录侧）----
+    /// `netease_first`：先试网易云直链，失败回落酷我；
+    /// `kuwo_only`：网易云只当目录，音源一律走酷我桥接。
+    #[serde(default = "default_netease_mode")]
+    pub netease_play_mode: String,
+}
+
+fn default_netease_mode() -> String {
+    "netease_first".into()
 }
 
 fn default_concurrency() -> u32 {
@@ -90,6 +101,7 @@ impl Default for Settings {
             s3_prefix: default_s3_prefix(),
             s3_path_style: false,
             close_to_tray: true,
+            netease_play_mode: default_netease_mode(),
         }
     }
 }
@@ -110,6 +122,8 @@ fn dirs_download() -> String {
 pub struct AppState {
     pub http: Arc<HttpClient>,
     pub providers: Vec<Arc<dyn MusicProvider>>,
+    /// 网易云是「需要登录态 + 可配置播放策略」的平台，单独留一个具体类型的句柄
+    pub netease: Arc<NeteaseProvider>,
     pub proxy: StreamProxy,
     pub storage: Arc<Storage>,
     pub downloader: Arc<Downloader>,
@@ -875,6 +889,10 @@ fn settings_set(state: State<'_, AppState>, mut settings: Settings) -> Result<()
     if let Ok(mut s) = state.settings.lock() {
         *s = settings.clone();
     }
+    // 网易云播放策略是 provider 内部状态，改设置时要同步过去
+    state
+        .netease
+        .set_play_mode(PlayMode::parse(&settings.netease_play_mode));
     save_settings(&state.config_dir, &settings);
     Ok(())
 }
@@ -1832,6 +1850,8 @@ async fn login(
         .storage
         .save_session(&session)
         .map_err(|e| e.to_string())?;
+    // 让 provider 立刻用上新会话（网易云的后续请求要带 MUSIC_U）
+    p.set_session(&session);
     Ok(session)
 }
 
@@ -1872,6 +1892,123 @@ async fn my_playlists(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "尚未登录".to_string())?;
     p.my_playlists(&sess).await.map_err(|e| e.to_string())
+}
+
+/// 每日推荐（网易云需要登录态；未登录会返回可读错误）
+#[tauri::command]
+async fn recommend_songs(
+    state: State<'_, AppState>,
+    provider: String,
+    limit: u32,
+) -> Result<Vec<Track>, String> {
+    let p = state.provider(&provider)?;
+    p.recommend_songs(limit).await.map_err(|e| e.to_string())
+}
+
+/// 推荐歌单（网易云匿名也能取到，登录后更个性化）
+#[tauri::command]
+async fn recommend_playlists(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<Vec<PlaylistRef>, String> {
+    let p = state.provider(&provider)?;
+    p.recommend_playlists().await.map_err(|e| e.to_string())
+}
+
+/// 网易云登录窗口的标签
+const NETEASE_LOGIN_LABEL: &str = "nelogin";
+
+/// 打开网易云网页登录窗口：用户在里面正常登录，我们从 webview 里取 `MUSIC_U`。
+///
+/// 为什么不用「手机号 + 密码」当主路径：网易云对异地/新设备会要求短信或设备校验
+/// （`code=8821`），纯 HTTP 登录很难过。网页登录走的是官方前端，风控由官方处理，
+/// 我们只负责把 cookie 交回后端校验一次。
+#[tauri::command]
+async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(NETEASE_LOGIN_LABEL) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = tauri::Url::parse("https://music.163.com/").map_err(|e| e.to_string())?;
+    let w = tauri::WebviewWindowBuilder::new(
+        &app,
+        NETEASE_LOGIN_LABEL,
+        tauri::WebviewUrl::External(url),
+    )
+    .title("网易云登录")
+    .always_on_top(true)
+    .inner_size(1100.0, 780.0)
+    .visible(false)
+    .on_document_title_changed(|window, title| {
+        let _ = window.set_title(&title);
+    })
+    .build()
+    .map_err(|e| e.to_string())?;
+    place_centered(&w, 1100.0, 780.0);
+    let _ = w.show();
+    let _ = w.set_focus();
+
+    // 轮询 cookie：拿到 MUSIC_U 就关窗 + 后台校验 + 落库 + 通知前端
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut misses = 0u8;
+        for _ in 0..720 {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let Some(w) = handle.get_webview_window(NETEASE_LOGIN_LABEL) else {
+                misses += 1;
+                if misses > 4 {
+                    return;
+                }
+                continue;
+            };
+            misses = 0;
+            let Ok(cookies) = w.cookies() else { continue };
+            let picked: Vec<(String, String)> = cookies
+                .iter()
+                .filter(|c| {
+                    let d = c.domain().unwrap_or("").to_ascii_lowercase();
+                    d.contains("163.com")
+                })
+                .map(|c| (c.name().to_string(), c.value().to_string()))
+                .collect();
+            if !picked
+                .iter()
+                .any(|(k, v)| k == "MUSIC_U" && !v.is_empty())
+            {
+                continue;
+            }
+            let header = picked
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let _ = w.close();
+
+            let state = handle.state::<AppState>();
+            let provider = state.provider("netease");
+            let result = match provider {
+                Ok(p) => tauri::async_runtime::block_on(p.login_cookie(&header)),
+                Err(e) => Err(tinymusic_core::Error::Unsupported(e)),
+            };
+            match result {
+                Ok(session) => {
+                    let _ = state.storage.save_session(&session);
+                    if let Ok(p) = state.provider("netease") {
+                        p.set_session(&session);
+                    }
+                    let _ = handle.emit("netease://login", &session);
+                }
+                Err(e) => {
+                    let _ = handle.emit("netease://login_error", e.to_string());
+                }
+            }
+            return;
+        }
+        // 超时：把窗口留着让用户自己关，但告知前端
+        let _ = handle.emit("netease://login_timeout", "登录窗口已超时");
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -2518,16 +2655,29 @@ pub fn run() {
                 .expect("启动本地流代理失败");
             println!("[tinymusic] 流代理: {}", proxy.base_url());
 
-            let providers: Vec<Arc<dyn MusicProvider>> =
-                vec![Arc::new(KuwoProvider::with_http(http.clone()))];
-
             let storage =
                 Arc::new(Storage::open(config_dir.join("tinymusic.db")).expect("打开数据库失败"));
             let settings = load_settings(&config_dir);
 
+            let kuwo: Arc<dyn MusicProvider> = Arc::new(KuwoProvider::with_http(http.clone()));
+            // 网易云把酷我当跨源音源：目录（推荐/歌单）走网易云，播放先试网易云直链，
+            // 不行就按「标题+歌手+时长」到酷我匹配同一首。
+            let netease = Arc::new(NeteaseProvider::with_http(
+                http.clone(),
+                Some(kuwo.clone()),
+            ));
+            netease.set_play_mode(PlayMode::parse(&settings.netease_play_mode));
+            // 重启后恢复网易云登录态（cookie 存在 sessions 表里）
+            match storage.get_session("netease") {
+                Ok(Some(sess)) => netease.set_session(&sess),
+                _ => {}
+            }
+            let providers: Vec<Arc<dyn MusicProvider>> = vec![kuwo, netease.clone()];
+
             app.manage(AppState {
                 http: http.clone(),
                 providers,
+                netease: netease.clone(),
                 proxy,
                 storage,
                 downloader: Arc::new(Downloader::new(http)),
@@ -2608,6 +2758,9 @@ pub fn run() {
             logout,
             session_get,
             my_playlists,
+            recommend_songs,
+            recommend_playlists,
+            netease_login_open,
             s3_test,
             s3_playlists,
             s3_playlist_create,

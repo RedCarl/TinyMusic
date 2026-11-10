@@ -240,6 +240,10 @@ hide_to_tray()                                   // 收进托盘
 - 内容矩形底部留白 100px，没有播放器时归零；队列浮层抬到播放器上方，不会叠在一起
 - 列表窗口变窄时逐级收列：≤1020px 收起专辑列，≤940px 再收起热度列，
   保证标题列在 880px 最小窗口下仍有空间
+- 窗口拉宽时内容跟着长，长到 1600px 封顶，再多的宽度用 `margin-inline: auto`
+  平分到左右（而不是把内容顶在左边、右边空一大块）；行内标题列不再无限拉伸，
+  徽标跟着歌名排，宽屏下也不会被甩到列尾。往窄里缩仍然是流式的，
+  到 880px 以下才由上面那两级收列接手
 - 页面标题 26px，内容区左右各 32px；内容区顶部只保留页面自己的 24px，
   不再叠加 macOS 标题栏的 46px inset（红绿灯只在侧边栏上方）
 - 颜色只留给有意义的东西：品牌绿（正在播放、已喜欢）、成功、失败、警告、
@@ -640,6 +644,132 @@ const K23: &[u8] = b"_Y8g2E6n0E1i7L5t2IoOoNk";    // 23 字节
 自动改走 `resolve_trackmedia`；成功则缓存 24 小时。
 因此"会员曲"在 UI 里是**可播放**的，`PAY` 字段只作为「会员内容」提示。
 
+---
+
+## 网易云：登录、每日推荐与跨源播放
+
+一句话：**目录用网易云，音源优先网易云直链、失败再回落到酷我**。
+
+```text
+每日推荐 / 歌单 / 搜索（网易云 weapi）
+      ↓ 曲目（id / 标题 / 歌手 / 时长）
+resolve()
+      ├─ 1) 网易云 song/enhance/player/url/v1 → verify_url()
+      └─ 2) 失败 → bridge::find_in_kuwo()（标题 0.55 + 歌手 0.30 + 时长 0.15）
+                    → 酷我 resolve()（含占位文件校验）
+```
+
+播放策略可在 **设置 → 网易云（推荐与歌单）** 里切换：
+`netease_first`（默认，先试网易云直链）或 `kuwo_only`（网易云只当目录）。
+
+### 为什么需要 `weapi`
+
+网易云的私有接口（登录、每日推荐、歌单、取流）全部走 `weapi`：
+
+```text
+POST https://music.163.com/weapi/{path}?csrf_token={__csrf}
+Cookie: MUSIC_U=...
+params=<base64>&encSecKey=<hex>
+```
+
+* `params` = `AES-128-CBC( AES-128-CBC(json, "0CoJUm6Qyw8W8jud"), secretKey )`
+* `encSecKey` = `RSA_raw(reverse(secretKey), e=65537, n=<页面里写死的 1024bit 模数>)`
+* 两个坑：外层加密的是**内层 base64 字符串本身**（不是二进制）；
+  `params` 里的 `+ / =` 必须百分号编码，否则服务端直接 `code=400`。
+
+实现在 `core/src/providers/netease/weapi.rs`（`aes` + `num-bigint`，纯 Rust，无 C 依赖），
+并有单元测试覆盖 PKCS#7 补位、往返解密、`encSecKey` 长度与「每次请求换 key」。
+
+### 登录：网页登录 + cookie 逃生
+
+不做应用内账号密码框：网易云对异地/新设备会要求短信或设备校验（`code=8821`），
+纯 HTTP 登录经常卡在这一步。
+
+1. **网页登录（主路径）**：`账号 → 网易云 → 网页登录` 打开 `music.163.com` 的
+   webview，后台每 500ms 读一次该 webview 的 cookie；读到 `MUSIC_U` 就关窗，
+   用 `w/nuser/account/get` 校验一次，存库并注入 provider。
+2. **cookie 登录（逃生）**：从浏览器 DevTools 复制 `MUSIC_U=...` 粘进来，
+   走同一个校验接口。校验不通过会明确报「cookie 无效（缺少 MUSIC_U 或已过期）」。
+3. **手机号 + 密码**：provider 里也实现了（提交 `md5(密码)`），
+   遇到 `8821` 会把原因翻译给用户并建议改用上面两条路。
+
+会话存在 `sessions` 表里，重启时由外壳 `provider.set_session()` 注入，
+不需要重新登录。
+
+### 接口与实测（2026-11-10，本机网络）
+
+| 能力 | 接口 | 匿名 | 备注 |
+|---|---|---|---|
+| 每日推荐 | `v3/discovery/recommend/songs` | ⚠️ 给通用列表 | 登录后个人化，返回 30–45 首 |
+| 每日推荐（旧） | `v2/discovery/recommend/songs` | ❌ `code=301` | 曲目字段是老结构（`artists`/`album`） |
+| 推荐歌单 | `v1/discovery/recommend/resource` | ❌ 301 | 登录后 8–10 张 |
+| 我的歌单 | `user/playlist` | ✅（公开歌单） | 含 `specialType=5` 的「喜欢的音乐」 |
+| 歌单详情 | `v6/playlist/detail` | ✅ | 只给 `trackIds`，曲目要再查 `song/detail` |
+| 搜索 | `cloudsearch/pc` | ✅ | `type=1` 单曲、`type=1000` 歌单 |
+| 专辑 / 艺人 | `v1/album/{id}`、`v1/artist/{id}`、`artist/albums/{id}` | ✅ | `artist/album` 已废弃（400） |
+| 歌词 | `song/lyric` | ✅ | 有翻译时合并成「原文 / 译文」 |
+| 取流 | `song/enhance/player/url/v1` | ⚠️ 免费曲可用 | `fee=1` 会员曲返回 `code=-110` |
+
+`fee` 语义实测：`0`/`8` 都能拿到 320k 直链，`1`/`4` 才需要账号权益。
+所以 `fee=8` **不标**「仅试听」——早先把它当试听是错的。
+
+### 跨源匹配：为什么不能只按标题搜
+
+酷我 `search.kuwo.cn/r.s` 的排序严重偏向翻唱/DJ 版。实测搜「恋人 李荣浩」，
+前 30 条里没有李荣浩原版，全是李健、李毅阳、Instrumental、雷鬼版：
+
+```text
+恋人(2013版)|李健|168s
+恋人|李毅阳|240s
+恋人 (Instrumental)|뎁트&慢热同学LEON|203s
+...
+```
+
+所以 `bridge.rs` 做三件事：规范化标题（去括号/版本词/噪声）、校验歌手（拆
+`/ & 、` 多歌手）、校验时长（>25s 直接判不同版本）。
+打分 `标题 0.55 + 歌手 0.30 + 时长 0.15`，**阈值 0.75**；
+候选带「伴奏/cover/Live/DJ/抖音」而目标没有，再扣 0.20。
+低于阈值宁可报「不可用」，也不放错版本。
+
+查询还会跑三轮（`标题 歌手` → `标题` → `标题 第一歌手`），取全部候选里的最高分——
+上面那首李荣浩就是在补的查询里以 1.00 分命中的。
+
+### 实测结果
+
+`cargo test -p tinymusic-core --test netease_live -- --ignored --nocapture`
+
+热歌榜前 20 首、匿名、320k：
+
+```text
+网易云直链 12/20 ｜ 酷我桥接 7/20 ｜ 失败 1 ｜ 合计可播 19/20（95%）
+```
+
+失败的那首是 `fee=1` 且酷我没有的曲目 —— 登录后走网易云直链即可。
+单看「网易云自己不给、只能靠酷我」的那批（`fee=1`，10 首）：
+
+```text
+命中 9/10 —— 6 首标题/歌手/时长全中（1.00），3 首是标题带后缀的同一录版（0.89）
+只有「Marry - Top Barry/INDEcompany」酷我确实没有
+```
+`bridge_matching_quality` 用例单独看匹配质量：晴天/我不难过 1.00，
+天龙八部之宿敌 0.89（酷我那条标题带「《天龙八部3》网游主题曲」后缀），
+明显不同版本的会判 0 分并报不可用。
+
+### 已知限制
+
+* **每日推荐不是一个真实歌单**：前端要像歌单一样点进详情页，所以 `NeteaseProvider::playlist("daily")`
+  在 core 里合成一个 `id=daily` 的「假歌单」（封面取第一首、描述写「每天 6:00 更新」），
+  这样详情页、播放全部、序号都能直接复用歌单页面，代价是它会被 `saved_playlists` 当普通歌单存。
+
+* **会员曲仍需要账号**：`MUSIC_U` 有效但无 VIP 时，`fee=1` 的曲目取流仍是 `-110`，
+  只能靠酷我桥接；两边都没有时如实报不可用。
+* **`v3` 匿名也会给列表**：未登录时它返回的是通用推荐，不是「你的」。UI 因此把
+  推荐页锁定在登录态之后。
+* **匹配是启发式**：同名不同版本（Live/翻唱/伴奏）靠时长与版本词过滤，
+  命中后 `via` 字段会写成 `kuwo-bridge/0.89`，便于排查。
+* **协议会变**：`weapi` 是非公开接口，参数或魔数随时可能改；
+  provider 里的所有端点都做了 `code` 判定与可读错误，不会静默降级成空列表。
+
 ## 技术要点
 
 **本地流代理**（`core/src/proxy.rs`）
@@ -688,6 +818,10 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
 - 更新源：`https://github.com/RedCarl/TinyMusic/releases/latest/download/latest.json`
 - 校验：minisign 签名，公钥内置在 `tauri.conf.json` 的 `plugins.updater.pubkey`
 - 流程：检查 → 显示新版本号 → 下载并安装（带进度条）→ 自动重启
+- 静默检查：启动后 2.5 秒查一次、之后每 6 小时一次（`src/lib/update.svelte.ts`），
+  只比版本号，不下载、不弹窗、失败当没发生；有新版本就在侧边栏「设置」右侧
+  点一颗 6px 红点（`title` 里带版本号），点进设置才会看到完整信息。
+  手动点「检查更新」确认已是最新时，红点顺手撤掉
 
 发新版本只需要改 `tauri.conf.json` / `package.json` / `Cargo.toml` 的版本号，
 推送后跑一次工作流，旧版本客户端就能收到更新。
@@ -703,6 +837,25 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 无密码则不用设
 | macOS .dmg | 3.16 MB |
 
 前端零 UI 框架依赖（除 Svelte 运行时），Rust 侧不引入 anyhow/regex/chrono/hyper。
+
+网易云协议额外用到的只有三个纯 Rust 小 crate：`aes`（AES-128-CBC）、
+`num-bigint`（RSA 模幂）、`md-5`（登录密码摘要），都不带 C 依赖。
+
+### 本地构建注意（Windows + MinGW）
+
+`src-tauri/Cargo.toml` 的 `[lib] crate-type` 只保留 `rlib`：
+
+```toml
+crate-type = ["rlib"]
+```
+
+`staticlib` / `cdylib` 是给 iOS/Android 用的。在 Windows + MinGW 下链接 cdylib 会因为
+导出符号超过 65535 个直接失败（`ld: error: export ordinal too large`），
+而出移动包时才需要它们。要出移动目标时再临时加回去。
+
+MinGW 工具链需要出现在 `PATH` 里（本机在
+`%LOCALAPPDATA%\tinymusic-toolchain\mingw64\bin`），否则 `libsqlite3-sys` 的
+bundled 编译会报 `failed to find tool "gcc.exe"`。
 
 ---
 

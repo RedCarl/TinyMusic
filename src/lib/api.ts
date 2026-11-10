@@ -145,6 +145,13 @@ export interface Settings {
   s3_path_style: boolean;
   // ---- 托盘 ----
   close_to_tray: boolean;
+  // ---- 网易云 ----
+  /**
+   * 播放策略：
+   * - `netease_first`（默认）：先试网易云直链，失败回落酷我
+   * - `kuwo_only`：网易云只当目录，音源一律走酷我
+   */
+  netease_play_mode: 'netease_first' | 'kuwo_only';
 }
 
 /** 网盘里的歌单（= 桶内按目录归类） */
@@ -313,7 +320,7 @@ export const api = {
     invoke<boolean>('saved_playlist_check', { provider, id }),
 
   providerFeatures: (provider: string) =>
-    invoke<{ favorites: boolean }>('provider_features', { provider }),
+    invoke<{ favorites: boolean; recommend: boolean }>('provider_features', { provider }),
 
   authCapabilities: (provider: string) =>
     invoke<AuthCapability[]>('auth_capabilities', { provider }),
@@ -332,6 +339,23 @@ export const api = {
   logout: (provider: string) => invoke<void>('logout', { provider }),
   sessionGet: (provider: string) => invoke<Session | null>('session_get', { provider }),
   myPlaylists: (provider: string) => invoke<PlaylistRef[]>('my_playlists', { provider }),
+
+  // ---- 网易云（目录侧）----
+  /** 每日推荐（需要登录态） */
+  recommendSongs: (provider: string, limit = 30) =>
+    invoke<Track[]>('recommend_songs', { provider, limit }),
+  /** 推荐歌单 */
+  recommendPlaylists: (provider: string) =>
+    invoke<PlaylistRef[]>('recommend_playlists', { provider }),
+  /**
+   * 打开网易云网页登录窗口。
+   *
+   * 登录结果通过事件回传：
+   * - `netease://login`       登录成功（payload = Session）
+   * - `netease://login_error` 拿到 cookie 但校验失败
+   * - `netease://login_timeout` 超时未登录
+   */
+  neteaseLoginOpen: () => invoke<void>('netease_login_open'),
 
   settingsGet: () => invoke<Settings>('settings_get'),
   settingsSet: (settings: Settings) => invoke<void>('settings_set', { settings }),

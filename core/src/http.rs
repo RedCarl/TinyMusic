@@ -181,6 +181,125 @@ impl HttpClient {
         }
     }
 
+    /// 带自定义 header 的 POST（form-urlencoded），返回响应文本与 `Set-Cookie` 列表。
+    ///
+    /// 网易云的 `weapi` 需要 `Referer` + `Cookie` 才会返回登录态数据；
+    /// 同时登录接口把 `MUSIC_U` 放在 `Set-Cookie` 里，必须原样拿回来。
+    pub async fn post_form_with(
+        &self,
+        host_key: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+        form: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let mut attempt = 0u32;
+        loop {
+            let _permit = self.permits.acquire().await.map_err(|_| Error::Cancelled)?;
+            self.throttle(host_key).await;
+            self.stats.requests.fetch_add(1, Ordering::Relaxed);
+
+            let mut req = self
+                .client
+                .post(url)
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(form.to_string());
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                    {
+                        drop(_permit);
+                        if attempt >= 4 {
+                            return Err(Error::Http(format!("HTTP {}", status.as_u16())));
+                        }
+                        self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(backoff(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    // 4xx 不自动重试，但要把 body 交给调用方解析错误码
+                    let set_cookie: Vec<String> = resp
+                        .headers()
+                        .get_all(reqwest::header::SET_COOKIE)
+                        .iter()
+                        .filter_map(|v| v.to_str().ok())
+                        .map(|s| s.to_string())
+                        .collect();
+                    let body = resp.text().await?;
+                    if !status.is_success() {
+                        return Err(Error::Http(format!("HTTP {} {}", status.as_u16(), body)));
+                    }
+                    return Ok((body, set_cookie));
+                }
+                Err(e) => {
+                    if attempt >= 4 {
+                        return Err(e.into());
+                    }
+                    self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(backoff(attempt)).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
+    /// 带自定义 header 的 GET（网易云的部分 JSON 接口仍然只认 GET + Cookie）
+    pub async fn get_text_with(
+        &self,
+        host_key: &str,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<String> {
+        let mut attempt = 0u32;
+        loop {
+            let _permit = self.permits.acquire().await.map_err(|_| Error::Cancelled)?;
+            self.throttle(host_key).await;
+            self.stats.requests.fetch_add(1, Ordering::Relaxed);
+
+            let mut req = self.client.get(url);
+            for (k, v) in headers {
+                req = req.header(*k, *v);
+            }
+
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                    {
+                        drop(_permit);
+                        if attempt >= 4 {
+                            return Err(Error::Http(format!("HTTP {}", status.as_u16())));
+                        }
+                        self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                        tokio::time::sleep(backoff(attempt)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    let body = resp.text().await?;
+                    if !status.is_success() {
+                        return Err(Error::Http(format!("HTTP {} {}", status.as_u16(), body)));
+                    }
+                    return Ok(body);
+                }
+                Err(e) => {
+                    if attempt >= 4 {
+                        return Err(e.into());
+                    }
+                    self.stats.retries.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(backoff(attempt)).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
     /// GET 原始字节（音乐信息包的二进制响应必须用这个）
     pub async fn get_bytes(&self, host_key: &str, url: &str) -> Result<Vec<u8>> {
         let mut attempt = 0u32;

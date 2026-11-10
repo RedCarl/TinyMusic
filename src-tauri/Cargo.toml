@@ -7,7 +7,10 @@ description = "TinyMusic — 轻量多平台音乐客户端"
 
 [lib]
 name = "tinymusic_app"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 桌面端只需要 rlib。`staticlib` / `cdylib` 是移动端（iOS/Android）才需要的产物：
+# 在 Windows + MinGW 上链接 cdylib 会因为导出符号超过 65535 个而失败
+# （ld: error: export ordinal too large）。要出移动包时再临时加回来。
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

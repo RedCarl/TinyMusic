@@ -32,6 +32,11 @@ base64 = "0.22"
 # S3 SigV4 签名（只用 SHA-256 / HMAC-SHA256，不引 aws-sdk）
 sha2 = "0.10"
 hmac = "0.12"
+# 网易云 weapi：AES-128-CBC 双层加密 + 教科书 RSA 的模幂
+aes = "0.8"
+num-bigint = "0.4"
+# 手机号登录要提交 md5(密码)
+md-5 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time"] }

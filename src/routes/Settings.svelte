@@ -11,6 +11,11 @@
   import ProgressBar from '../components/ProgressBar.svelte';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
+  import { slide } from 'svelte/transition';
+  import { clearUpdateBadge, updateState } from '../lib/update.svelte';
+
+  /** 关掉动画就别展开收起，直接跳 */
+  const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // ---- 更新 ----
   let appVersion = $state('');
@@ -34,8 +39,10 @@
       if (u) {
         pending = u;
         updMsg = `发现新版本 ${u.version}`;
+        updateState.version = u.version;
       } else {
         updMsg = '已经是最新版本';
+        clearUpdateBadge();
       }
     } catch (e) {
       updErr = `检查失败：${e}`;
@@ -85,6 +92,7 @@
     s3_prefix: 'TinyMusic',
     s3_path_style: false,
     close_to_tray: true,
+    netease_play_mode: 'netease_first',
   });
   let loaded = $state(false);
   let err = $state('');
@@ -286,8 +294,32 @@
   </section>
 
   <section class="st-section">
+    <div class="st-section-title">网易云（推荐与歌单）</div>
+    <div class="st-card">
+      <div class="st-row">
+        <div class="st-label">
+          播放音源
+          <span class="st-desc">
+            目录（每日推荐/歌单）来自网易云；音源默认先试网易云直链，失败再按
+            「标题 + 歌手 + 时长」到酷我匹配同一首
+          </span>
+        </div>
+        <select
+          class="st-select"
+          aria-label="网易云播放音源"
+          bind:value={s.netease_play_mode}
+          onchange={saveNow}
+        >
+          <option value="netease_first">网易云优先，酷我兜底</option>
+          <option value="kuwo_only">只用酷我音源</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
+  <section class="st-section">
     <div class="st-section-title">网盘</div>
-    <div class="st-card" class:is-off={!s.s3_enabled}>
+    <div class="st-card">
       <div class="st-row">
         <div class="st-label">
           启用网盘
@@ -304,101 +336,105 @@
         </label>
       </div>
 
-      <div class="st-row">
-        <div class="st-label">Endpoint</div>
-        <input
-          class="st-input st-input-wide"
-          bind:value={s.s3_endpoint}
-          aria-label="S3 Endpoint"
-          oninput={scheduleSave}
-          placeholder="https://s3.us-east-1.amazonaws.com"
-          spellcheck="false"
-        />
-      </div>
+      {#if s.s3_enabled}
+        <div class="st-s3-more" transition:slide={{ duration: REDUCE_MOTION ? 0 : 180 }}>
+          <div class="st-row">
+            <div class="st-label">Endpoint</div>
+            <input
+              class="st-input st-input-wide"
+              bind:value={s.s3_endpoint}
+              aria-label="S3 Endpoint"
+              oninput={scheduleSave}
+              placeholder="https://s3.us-east-1.amazonaws.com"
+              spellcheck="false"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">Region</div>
-        <input
-          class="st-input"
-          bind:value={s.s3_region}
-          aria-label="S3 Region"
-          oninput={scheduleSave}
-          placeholder="us-east-1"
-          spellcheck="false"
-        />
-      </div>
+          <div class="st-row">
+            <div class="st-label">Region</div>
+            <input
+              class="st-input"
+              bind:value={s.s3_region}
+              aria-label="S3 Region"
+              oninput={scheduleSave}
+              placeholder="us-east-1"
+              spellcheck="false"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">Bucket</div>
-        <input
-          class="st-input"
-          bind:value={s.s3_bucket}
-          aria-label="S3 Bucket"
-          oninput={scheduleSave}
-          placeholder="my-music"
-          spellcheck="false"
-        />
-      </div>
+          <div class="st-row">
+            <div class="st-label">Bucket</div>
+            <input
+              class="st-input"
+              bind:value={s.s3_bucket}
+              aria-label="S3 Bucket"
+              oninput={scheduleSave}
+              placeholder="my-music"
+              spellcheck="false"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">前缀目录</div>
-        <input
-          class="st-input"
-          bind:value={s.s3_prefix}
-          aria-label="S3 前缀目录"
-          oninput={scheduleSave}
-          placeholder="TinyMusic"
-          spellcheck="false"
-        />
-      </div>
+          <div class="st-row">
+            <div class="st-label">前缀目录</div>
+            <input
+              class="st-input"
+              bind:value={s.s3_prefix}
+              aria-label="S3 前缀目录"
+              oninput={scheduleSave}
+              placeholder="TinyMusic"
+              spellcheck="false"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">Access Key</div>
-        <input
-          class="st-input st-input-wide"
-          bind:value={s.s3_access_key}
-          aria-label="S3 Access Key"
-          oninput={scheduleSave}
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </div>
+          <div class="st-row">
+            <div class="st-label">Access Key</div>
+            <input
+              class="st-input st-input-wide"
+              bind:value={s.s3_access_key}
+              aria-label="S3 Access Key"
+              oninput={scheduleSave}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">Secret Key</div>
-        <input
-          class="st-input st-input-wide"
-          type="password"
-          bind:value={s.s3_secret_key}
-          aria-label="S3 Secret Key"
-          oninput={scheduleSave}
-          autocomplete="off"
-        />
-      </div>
+          <div class="st-row">
+            <div class="st-label">Secret Key</div>
+            <input
+              class="st-input st-input-wide"
+              type="password"
+              bind:value={s.s3_secret_key}
+              aria-label="S3 Secret Key"
+              oninput={scheduleSave}
+              autocomplete="off"
+            />
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">Path-Style 寻址</div>
-        <label class="st-switch">
-          <input
-            type="checkbox"
-            aria-label="Path-Style 寻址"
-            bind:checked={s.s3_path_style}
-            onchange={saveNow}
-          />
-          <span class="st-switch-track" aria-hidden="true"></span>
-        </label>
-      </div>
+          <div class="st-row">
+            <div class="st-label">Path-Style 寻址</div>
+            <label class="st-switch">
+              <input
+                type="checkbox"
+                aria-label="Path-Style 寻址"
+                bind:checked={s.s3_path_style}
+                onchange={saveNow}
+              />
+              <span class="st-switch-track" aria-hidden="true"></span>
+            </label>
+          </div>
 
-      <div class="st-row">
-        <div class="st-label">连接</div>
-        <button class="st-btn" onclick={testS3} disabled={s3Busy || !s.s3_enabled}>
-          {s3Busy ? '连接中…' : '测试连接'}
-        </button>
-      </div>
+          <div class="st-row">
+            <div class="st-label">连接</div>
+            <button class="st-btn" onclick={testS3} disabled={s3Busy || !s.s3_enabled}>
+              {s3Busy ? '连接中…' : '测试连接'}
+            </button>
+          </div>
 
-      {#if s3Msg || s3Err}
-        <div class="st-status" class:bad={!!s3Err}>
-          {s3Err || s3Msg}
+          {#if s3Msg || s3Err}
+            <div class="st-status" class:bad={!!s3Err}>
+              {s3Err || s3Msg}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -482,8 +518,9 @@
     background-color: var(--bg2);
   }
 
-  .st-card.is-off {
-    opacity: 0.55;
+  /* 网盘没启用时这块整段不渲染；收起后它不再是 .st-row 的兄弟，自己补一条分隔线 */
+  .st-s3-more > .st-row:first-child {
+    border-top: 1px solid var(--line);
   }
 
   .st-row {

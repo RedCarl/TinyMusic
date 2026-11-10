@@ -67,7 +67,6 @@
   }
 
   const unavailable = $derived(isBlocked(track.availability));
-  const vipOnly = $derived(track.availability === 'vip_only');
   const cloudOnly = $derived(track.provider === 's3');
 
   const playLabel = $derived(
@@ -79,9 +78,7 @@
           ? '暂停'
           : current
             ? '继续播放'
-            : vipOnly
-              ? '会员曲目（可播放）'
-              : '播放'
+            : '播放'
   );
 
   // 挂载后查询一次收藏状态（避免依赖悬停事件）
@@ -136,7 +133,6 @@
       <span class="badge sq" title="本曲有无损 FLAC">无损</span>
     {/if}
     {#if track.availability === 'preview_only'}<span class="badge warn">仅试听</span>{/if}
-    {#if vipOnly}<span class="badge warn">会员曲</span>{/if}
     {#if track.availability === 'unavailable'}<span class="badge mute">不可用</span>{/if}
   </div>
 

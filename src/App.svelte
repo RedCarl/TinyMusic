@@ -5,6 +5,7 @@
   import { icons, ICON_SIZE } from './lib/icons';
   import { router, go } from './lib/router.svelte';
   import { api } from './lib/api';
+  import { updateState, checkUpdatesSilently } from './lib/update.svelte';
   import {
     player,
     bindAudio,
@@ -29,6 +30,7 @@
   import ContextMenu from './components/ContextMenu.svelte';
   import Toast from './components/Toast.svelte';
   import Search from './routes/Search.svelte';
+  import Recommend from './routes/Recommend.svelte';
   import Playlist from './routes/Playlist.svelte';
   import Account from './routes/Account.svelte';
   import AccountPlaylists from './routes/AccountPlaylists.svelte';
@@ -41,7 +43,8 @@
   import Cloud from './routes/Cloud.svelte';
   import Lyrics from './routes/Lyrics.svelte';
   import { appCfg, refreshAppCfg } from './lib/config.svelte';
-  import { account } from './lib/account.svelte';
+  import { account, hasNetease } from './lib/account.svelte';
+  import { syncNeteaseSession } from './lib/neteaseLogin';
   import { showToast } from './lib/toast.svelte';
 
   // 自绘标题栏只出现在 Windows + Tauri（见 main.ts 的 data-chrome）
@@ -76,6 +79,8 @@
     // 依赖当前菜单和「喜欢」是否出现（导航项数量会变）
     activeNav;
     appCfg.s3Enabled;
+    // 登录/登出会增删「推荐」这一项，导航指示条要跟着重量
+    navTop;
     const raf = requestAnimationFrame(() => {
       measureNav();
       if (!indReady) requestAnimationFrame(() => (indReady = true));
@@ -192,8 +197,14 @@
     window.addEventListener('beforeunload', saveRecord);
     document.addEventListener('visibilitychange', onVisibility);
 
+    // 静默更新检查：启动后隔一会儿查一次（别和首屏抢网络），之后每 6 小时再看一眼
+    const firstCheck = setTimeout(() => void checkUpdatesSilently(), 2500);
+    const updateTimer = setInterval(() => void checkUpdatesSilently(), 6 * 60 * 60 * 1000);
+
     return () => {
       unlisten?.();
+      clearTimeout(firstCheck);
+      clearInterval(updateTimer);
       window.removeEventListener('pagehide', saveRecord);
       window.removeEventListener('beforeunload', saveRecord);
       document.removeEventListener('visibilitychange', onVisibility);
@@ -206,7 +217,17 @@
   });
 
   // 侧边栏按 Apple Music 的分组方式排：顶部单项、资料库、其他、底部账号
-  const navTop = [{ name: 'search', label: '搜索', icon: icons.search }];
+  //
+  // 「推荐」是网易云专属页面：登录后它同时是首页，排在「搜索」前面；
+  // 没登录时整项不出现——它没有内容可看，留着只会占位。
+  const navTop = $derived(
+    hasNetease()
+      ? [
+          { name: 'recommend', label: '推荐', icon: icons.hot },
+          { name: 'search', label: '搜索', icon: icons.search }
+        ]
+      : [{ name: 'search', label: '搜索', icon: icons.search }]
+  );
   // 「喜欢」存到网盘，只有网盘启用时才出现
   const navLibrary = $derived([
     ...(appCfg.s3Enabled ? [{ name: 'library', label: '喜欢', icon: icons.favorite }] : []),
@@ -263,21 +284,33 @@
       {#each navOther as n (n.name)}
         <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
+          <!-- 静默检查到新版才出现的一颗小红点，不写版本号、不闪 -->
+          {#if n.name === 'settings' && updateState.version}
+            <span class="nav-dot" title={`有新版本 ${updateState.version}，点进来更新`}></span>
+          {/if}
         </button>
       {/each}
     </nav>
     <div class="side-foot">
       <button class="foot" class:on={activeNav === 'account'} onclick={() => go({ name: 'account' })}>
-        <span class="avatar" class:logged={!!account.uid}>
+        <span class="avatar" class:logged={!!account.uid || hasNetease()}>
           {#if account.uid}
             {account.uid.slice(0, 1).toUpperCase()}
+          {:else if hasNetease()}
+            {(account.netease.nickname || account.netease.uid).slice(0, 1).toUpperCase()}
           {:else}
             <HugeiconsIcon icon={icons.account} size={ICON_SIZE.inline} />
           {/if}
         </span>
         <span class="foot-meta">
           <span class="foot-name">账号</span>
-          <span class="foot-sub">{account.uid ? '已登录' : '未登录'}</span>
+          <span class="foot-sub"
+            >{account.uid
+              ? '已登录'
+              : hasNetease()
+                ? account.netease.nickname || '网易云已登录'
+                : '未登录'}</span
+          >
         </span>
       </button>
     </div>
@@ -287,6 +320,8 @@
     {#if bootErr}<div class="err">{bootErr}</div>{/if}
     {#if router.route.name === 'search'}
       <Search />
+    {:else if router.route.name === 'recommend'}
+      <Recommend />
     {:else if router.route.name === 'playlist'}
       <Playlist />
     {:else if router.route.name === 'account'}

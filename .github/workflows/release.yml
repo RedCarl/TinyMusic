@@ -63,9 +63,14 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'TinyMusic v__VERSION__'
           releaseBody: |
-            跨平台音乐客户端（Tauri + Svelte）。
+            跨平台音乐客户端（Tauri + Svelte）。官网与下载页：https://redcarl.github.io/TinyMusic/
 
-            自动构建产物，含自动更新签名文件（.sig）与 latest.json。
+            - Windows：`TinyMusic_<版本>_x64-setup.exe`，或用 `.msi`
+            - macOS：`TinyMusic_<版本>_aarch64.dmg`（Apple 芯片）/ `TinyMusic_<版本>_x64.dmg`（Intel）
+            - `.sig` 与 `latest.json` 是应用内自动更新用的，不需要手动下载
+            - macOS 首次打开若提示「已损坏」，在 Finder 里右键 → 打开
+
+            安装包未做代码签名，SmartScreen / 门禁提示属正常现象。
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
