@@ -81,12 +81,6 @@
     }, 1200);
   }
 
-  function cancelLogin() {
-    loginBusy = false;
-    stopPoll();
-    api.loginClose().catch(() => {});
-  }
-
   async function logout() {
     loginBusy = false;
     stopPoll();
@@ -132,6 +126,7 @@
       role="button"
       aria-disabled={!account.uid}
       tabindex={account.uid ? 0 : -1}
+      aria-label={p.name}
       title={account.uid ? '查看账号歌单' : undefined}
       onclick={openAccount}
       onkeydown={onCardKey}
@@ -139,9 +134,6 @@
       <span class="acct-logo">
         <img src={p.logo} alt={p.name} />
       </span>
-      <div class="acct-main">
-        <div class="acct-name">{p.name}</div>
-      </div>
         {#if account.uid}
           <button class="mini" onclick={(e) => { e.stopPropagation(); logout(); }}>登出</button>
         {:else}
@@ -163,10 +155,4 @@
       </div>
     {/each}
   </div>
-  {#if webLogging}
-    <div class="acct-hint">
-      在弹出的窗口里登录，完成后会自动关闭
-      <button class="linkbtn" onclick={cancelLogin}>取消</button>
-    </div>
-  {/if}
 </div>

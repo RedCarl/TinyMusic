@@ -575,17 +575,28 @@ export function playNext(track: Track) {
   persistPlayback();
 }
 
+/** 刚关掉播放列表的时间点：连点两下时，第二次不应该马上又把它打开 */
+let lastQueueCloseAt = 0;
+const QUEUE_REOPEN_GUARD = 220;
+
 export function openQueue() {
   player.queueOpen = true;
   player.volumeOpen = false;
 }
 
 export function toggleQueue() {
-  player.queueOpen = !player.queueOpen;
-  if (player.queueOpen) player.volumeOpen = false;
+  if (!player.queueOpen) {
+    // 关闭动画还在走的时候（~180ms）忽略重新打开，避免「开了又关、关了又开」
+    if (Date.now() - lastQueueCloseAt < QUEUE_REOPEN_GUARD) return;
+    player.queueOpen = true;
+    player.volumeOpen = false;
+    return;
+  }
+  closeQueue();
 }
 
 export function closeQueue() {
+  if (player.queueOpen) lastQueueCloseAt = Date.now();
   player.queueOpen = false;
 }
 

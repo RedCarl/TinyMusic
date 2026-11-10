@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fly } from 'svelte/transition';
+  import { fade, fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { fmtDuration } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -11,15 +11,53 @@
     clearQueue,
     closeQueue,
   } from '../lib/player.svelte';
+
+  let listEl = $state<HTMLElement | null>(null);
+  let wasOpen = false;
+
+  /** 把正在播放的那一行滚到列表中间（刚打开时直接定位，之后换歌才用动画） */
+  function centerCurrent(instant: boolean) {
+    const list = listEl;
+    if (!list) return;
+    const row = list.querySelector<HTMLElement>('.qp-row.on');
+    if (!row) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const delta = rowRect.top - listRect.top - (listRect.height - rowRect.height) / 2;
+    const top = Math.max(0, list.scrollTop + delta);
+    if (instant) list.scrollTop = top;
+    else list.scrollTo({ top, behavior: 'smooth' });
+  }
+
+  $effect(() => {
+    const open = player.queueOpen;
+    // 依赖正在播放的下标：面板开着时切歌也会跟着滚
+    const index = player.index;
+    if (!open) {
+      wasOpen = false;
+      return;
+    }
+    // 刚打开时直接到位；面板开着时换歌才用平滑滚动
+    const instant = !wasOpen;
+    wasOpen = true;
+    // 等面板挂上、拿到真实高度之后再定位
+    const raf = requestAnimationFrame(() => centerCurrent(instant));
+    return () => cancelAnimationFrame(raf);
+  });
 </script>
 
 {#if player.queueOpen}
-  <div class="queue-mask" role="presentation" onclick={closeQueue}></div>
+  <div
+    class="queue-mask"
+    role="presentation"
+    onclick={closeQueue}
+    transition:fade={{ duration: 150 }}
+  ></div>
   <div
     class="queue-panel"
     role="dialog"
     aria-label="播放列表"
-    transition:fly={{ y: 14, duration: 200, opacity: 0 }}
+    transition:fly={{ y: 10, duration: 180, opacity: 0 }}
   >
     <div class="qp-head">
       <span class="qp-title">播放列表 <em>{player.queue.length} 首</em></span>
@@ -43,7 +81,7 @@
     {#if player.queue.length === 0}
       <div class="qp-empty">播放列表是空的 —— 在歌曲上点播放就会自动填充</div>
     {:else}
-      <div class="qp-list">
+      <div class="qp-list" bind:this={listEl}>
         {#each player.queue as t, i (t.provider + t.id + i)}
           <div
             class="qp-row"

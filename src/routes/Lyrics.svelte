@@ -17,8 +17,10 @@
   import { copyText } from '../lib/toast.svelte';
 
   let listEl = $state<HTMLElement | null>(null);
-  /** 上下留白 = 半个可视高度，让任意一行都能停到正中间 */
-  let centerPad = $state(120);
+  /** 上方留白只占两成：歌刚开始时不会先在头顶空出一大片 */
+  let padTop = $state(96);
+  /** 下方留白 = 半个可视高度，保证最后几句也能滚到正中间 */
+  let padBottom = $state(120);
   /** 切歌/首次打开时直接定位，不要从顶部一路滚下来 */
   let snap = true;
   let lastScrolled = -2;
@@ -119,8 +121,13 @@
     const el = listEl;
     if (!el) return;
     const remeasure = () => {
-      const pad = Math.round(el.clientHeight / 2);
-      if (pad > 0) centerPad = pad;
+      const h = el.clientHeight;
+      if (h > 0) {
+        // 上方只留一成高度（最少 72px）：开头的几句贴着上边出现，
+        // 而不是停在正中间、在头顶留一大片空白
+        padTop = Math.max(72, Math.round(h * 0.12));
+        padBottom = Math.round(h / 2);
+      }
       const i = untrack(() => active);
       if (i >= 0) scrollToLine(i, true);
     };
@@ -290,7 +297,7 @@
         <div
           class="lyrics-scroll"
           bind:this={listEl}
-          style="--pad:{centerPad}px"
+          style="--pad-top:{padTop}px; --pad-bottom:{padBottom}px"
           role="group"
           aria-label="歌词内容"
           onwheel={onUserScroll}

@@ -76,16 +76,18 @@
       <div class="artist-bio" class:clamp={bioTooLong && !bioOpen}>
         {bio}
       </div>
-      {#if bioTooLong}
-        <button class="bio-toggle" onclick={() => (bioOpen = !bioOpen)}>
-          {bioOpen ? '收起' : '展开简介'}
-        </button>
-      {/if}
     {/if}
 
-    <div class="tabs">
-      <button class:on={tab === 'songs'} onclick={() => (tab = 'songs')}>歌曲</button>
-      <button class:on={tab === 'albums'} onclick={() => (tab = 'albums')}>专辑</button>
+    <div class="artist-toolbar">
+      <div class="tabs">
+        <button class:on={tab === 'songs'} onclick={() => (tab = 'songs')}>歌曲</button>
+        <button class:on={tab === 'albums'} onclick={() => (tab = 'albums')}>专辑</button>
+      </div>
+      {#if bio && bioTooLong}
+        <button class="bio-toggle" onclick={() => (bioOpen = !bioOpen)}>
+          {bioOpen ? '收起简介' : '展开简介'}
+        </button>
+      {/if}
     </div>
 
     {#if tab === 'songs'}

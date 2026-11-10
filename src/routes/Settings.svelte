@@ -9,6 +9,7 @@
   import { check, type Update } from '@tauri-apps/plugin-updater';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { relaunch } from '@tauri-apps/plugin-process';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
 
   // ---- 更新 ----
   let appVersion = $state('');
@@ -117,6 +118,24 @@
     }
   }
 
+  /** 调系统目录选择框；取消或非 Tauri 环境（浏览器调试）就原样不动 */
+  async function pickDir() {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: '选择下载目录',
+        defaultPath: s.download_dir || undefined
+      });
+      if (typeof picked === 'string' && picked) {
+        s.download_dir = picked;
+        await saveNow();
+      }
+    } catch {
+      /* 浏览器里没有原生对话框，忽略 */
+    }
+  }
+
   /** 文本输入用 400ms 防抖，避免每敲一个字都写盘 */
   function scheduleSave() {
     if (saveTimer) clearTimeout(saveTimer);
@@ -177,12 +196,18 @@
 
   <div class="field">
     <div class="lbl">下载目录</div>
-    <input
-      bind:value={s.download_dir}
-      oninput={scheduleSave}
-      spellcheck="false"
-      placeholder="~/Music/TinyMusic"
-    />
+    <div class="dirrow">
+      <input
+        bind:value={s.download_dir}
+        oninput={scheduleSave}
+        spellcheck="false"
+        placeholder="~/Music/TinyMusic"
+      />
+      <button class="mini dirpick" onclick={pickDir} title="打开系统的目录选择窗口">
+        <HugeiconsIcon icon={icons.folder} size={ICON_SIZE.inline} />
+        选择…
+      </button>
+    </div>
   </div>
 
   <div class="field">

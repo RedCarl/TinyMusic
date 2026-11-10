@@ -218,13 +218,14 @@
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
         </button>
       {/each}
-      <div class="nav-group">资料库</div>
+      <!-- 分组不再写标题：用一道空气把组分开，避免一条条横线把侧边栏切开 -->
+      <div class="nav-sep" aria-hidden="true"></div>
       {#each navLibrary as n (n.name)}
         <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
         </button>
       {/each}
-      <div class="nav-group">其他</div>
+      <div class="nav-sep" aria-hidden="true"></div>
       {#each navOther as n (n.name)}
         <button class:on={activeNav === n.name} onclick={() => go({ name: n.name } as never)}>
           <span class="ico"><HugeiconsIcon icon={n.icon} size={ICON_SIZE.control} /></span>{n.label}
