@@ -1,0 +1,1883 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>TinyMusic — 4.5 MB 的桌面音乐客户端</title>
+<meta name="description" content="TinyMusic 是一个 4.5 MB 的跨平台桌面音乐客户端：搜索、试听、下载、歌词、网盘。基于 Tauri 2 + Svelte 5 + Rust，匿名公开接口，开源 MIT。" />
+<meta name="theme-color" content="#0e0f10" />
+<meta name="color-scheme" content="dark light" />
+<link rel="icon" href="assets/icon.png" type="image/png" />
+<link rel="apple-touch-icon" href="assets/icon.png" />
+<link rel="canonical" href="https://redcarl.github.io/TinyMusic/" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="TinyMusic" />
+<meta property="og:url" content="https://redcarl.github.io/TinyMusic/" />
+<meta property="og:title" content="TinyMusic — 4.5 MB 的桌面音乐客户端" />
+<meta property="og:description" content="搜索、试听、下载、歌词、网盘，都在一个窗口里。拿不到的歌会明确置灰，而不是卡在「正在搜索」。" />
+<meta property="og:image" content="https://redcarl.github.io/TinyMusic/assets/screenshot.jpg" />
+<meta name="twitter:card" content="summary_large_image" />
+
+<style>
+/* ==========================================================================
+   TinyMusic 落地页 — 材质沿用应用内的 solid glass：
+   中性深灰底、发丝线、只把颜色留给有意义的东西（品牌绿 / 警告 / 不可用）。
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0e0f10;
+  --fg: #f3f4f5;
+  --muted: #a4a6ab;
+  --faint: #7b7e84;
+
+  --line: rgba(255, 255, 255, 0.10);
+  --line-soft: rgba(255, 255, 255, 0.055);
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-hi: rgba(255, 255, 255, 0.062);
+
+  --brand: #6ee7b7;
+  --brand-deep: #34d399;
+  --brand-ink: #04241a;
+  --brand-soft: rgba(110, 231, 183, 0.12);
+  --brand-line: rgba(110, 231, 183, 0.26);
+
+  --warn: #f0c56a;
+
+  --radius: 16px;
+  --radius-lg: 22px;
+  --shadow-lg: 0 40px 80px -40px rgba(0, 0, 0, 0.95);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f6f6f7;
+  --fg: #16171a;
+  --muted: #5b5d63;
+  --faint: #86888e;
+
+  --line: rgba(0, 0, 0, 0.11);
+  --line-soft: rgba(0, 0, 0, 0.06);
+  --panel: #ffffff;
+  --panel-hi: #fbfbfc;
+
+  --brand: #0d8f6b;
+  --brand-deep: #0a7457;
+  --brand-ink: #ffffff;
+  --brand-soft: rgba(13, 143, 107, 0.09);
+  --brand-line: rgba(13, 143, 107, 0.28);
+
+  --warn: #9a6a05;
+
+  --shadow-lg: 0 30px 60px -35px rgba(16, 20, 24, 0.5);
+}
+
+* { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+/* 环境光：一层很淡的绿，给纯灰的页面一点方向。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 520px at 50% -12%, rgba(110, 231, 183, 0.14), transparent 68%),
+    radial-gradient(760px 460px at 88% 4%, rgba(96, 165, 250, 0.07), transparent 70%);
+}
+
+:root[data-theme="light"] body::before {
+  background:
+    radial-gradient(900px 520px at 50% -12%, rgba(13, 143, 107, 0.12), transparent 68%),
+    radial-gradient(760px 460px at 88% 4%, rgba(59, 130, 246, 0.07), transparent 70%);
+}
+
+img { max-width: 100%; height: auto; }
+
+a { color: inherit; text-decoration: none; }
+
+::selection {
+  background: var(--brand);
+  color: var(--brand-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.wrap {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+/* ==========================================================================
+   顶栏
+   ========================================================================== */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  backdrop-filter: saturate(140%) blur(18px);
+  -webkit-backdrop-filter: saturate(140%) blur(18px);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.nav.scrolled {
+  border-bottom-color: var(--line-soft);
+}
+
+.nav-inner {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-size: 15.5px;
+  flex: none;
+}
+
+/* 应用图标是一张深蓝色黑胶，直接放在深色底上会糊掉；
+   垫一块浅色「唱片纸套」，反而更像专辑封面。 */
+.brand img {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #f3f4f5;
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-links a {
+  padding: 7px 11px;
+  border-radius: 9px;
+  font-size: 14px;
+  color: var(--muted);
+  transition: color 0.18s ease, background 0.18s ease;
+  white-space: nowrap;
+}
+
+.nav-links a:hover {
+  color: var(--fg);
+  background: var(--panel-hi);
+}
+
+.nav-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+  padding: 0;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--panel-hi);
+  border-color: color-mix(in srgb, var(--line) 60%, var(--fg) 20%);
+}
+
+.icon-btn svg { width: 17px; height: 17px; }
+
+.gh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 13px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 13.5px;
+  color: var(--muted);
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.gh-btn:hover { color: var(--fg); background: var(--panel-hi); }
+.gh-btn svg { width: 16px; height: 16px; }
+.gh-btn .count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--faint);
+  padding-left: 7px;
+  border-left: 1px solid var(--line);
+}
+
+@media (max-width: 860px) {
+  .nav-links { display: none; }
+  .nav-inner { justify-content: space-between; }
+}
+
+/* ==========================================================================
+   Hero
+   ========================================================================== */
+
+.hero {
+  /* 只加上内边距，横向留白交给 .wrap，否则窄屏会贴边 */
+  padding-top: 84px;
+  text-align: center;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.eyebrow .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+h1 {
+  margin: 22px auto 0;
+  max-width: 15em;
+  font-size: clamp(38px, 6.4vw, 66px);
+  line-height: 1.08;
+  letter-spacing: -0.038em;
+  font-weight: 720;
+}
+
+h1 .accent {
+  background: linear-gradient(96deg, var(--brand) 8%, color-mix(in srgb, var(--brand) 55%, #93c5fd) 92%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.lede {
+  margin: 22px auto 0;
+  max-width: 640px;
+  color: var(--muted);
+  font-size: clamp(15px, 1.5vw, 17.5px);
+  line-height: 1.78;
+}
+
+.lede strong {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.cta-row {
+  margin: 34px auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 13px;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.2, 1),
+    background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  white-space: nowrap;
+}
+
+.btn svg { width: 17px; height: 17px; flex: none; }
+
+.btn-primary {
+  background: var(--brand);
+  color: var(--brand-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 14px 34px -16px color-mix(in srgb, var(--brand-deep) 70%, transparent);
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32),
+    0 18px 40px -16px color-mix(in srgb, var(--brand-deep) 80%, transparent);
+}
+
+.btn-ghost {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+.btn-ghost:hover {
+  background: var(--panel-hi);
+  border-color: color-mix(in srgb, var(--line) 50%, var(--fg) 22%);
+  transform: translateY(-1px);
+}
+
+.btn-block { width: 100%; height: 44px; font-size: 14px; border-radius: 11px; }
+
+.hero-meta {
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.hero-meta .sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.hero-meta a { color: inherit; border-bottom: 1px solid transparent; }
+.hero-meta a:hover { color: var(--muted); border-bottom-color: var(--line); }
+
+/* ---- 应用截图 ---- */
+
+.shot-wrap {
+  position: relative;
+  margin: 56px auto 0;
+  max-width: 1000px;
+}
+
+.shot-wrap::before {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: -40px;
+  height: 160px;
+  background: radial-gradient(60% 100% at 50% 0%, var(--brand-soft), transparent 72%);
+  filter: blur(26px);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.shot {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: #141517;
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1915 / 1123;
+  object-fit: cover;
+}
+
+.shot figcaption {
+  padding: 11px 16px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: #101113;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+/* ---- 数字条 ---- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 64px 0 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.stat {
+  padding: 24px 20px;
+  text-align: left;
+  border-left: 1px solid var(--line-soft);
+}
+
+.stat:first-child { border-left: 0; padding-left: 0; }
+
+.stat b {
+  display: block;
+  font-size: clamp(21px, 2.4vw, 26px);
+  font-weight: 660;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.stat span {
+  display: block;
+  margin-top: 5px;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+@media (max-width: 760px) {
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .stat { padding: 18px 14px; border-left: 1px solid var(--line-soft); }
+  .stat:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .stat:nth-child(-n + 2) { border-bottom: 1px solid var(--line-soft); }
+  /* 窄屏换行时点号会挂在行尾，直接收掉 */
+  .hero-meta .sep { display: none; }
+}
+
+/* ==========================================================================
+   通用区块
+   ========================================================================== */
+
+section { padding: 96px 0 0; }
+section:last-of-type { padding-bottom: 0; }
+
+.sec-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 34px;
+}
+
+.sec-idx {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h2 {
+  margin: 0;
+  font-size: clamp(25px, 3.4vw, 36px);
+  line-height: 1.22;
+  letter-spacing: -0.03em;
+  font-weight: 680;
+  max-width: 20em;
+}
+
+.sec-note {
+  margin: 0;
+  max-width: 380px;
+  color: var(--faint);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+@media (max-width: 800px) {
+  section { padding: 68px 0 0; }
+  .sec-head { flex-direction: column; align-items: flex-start; gap: 12px; }
+}
+
+/* ---- 功能卡片 ---- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.card {
+  position: relative;
+  padding: 24px 22px 22px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  transition: background 0.22s ease, border-color 0.22s ease, transform 0.22s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.card:hover {
+  background: var(--panel-hi);
+  border-color: color-mix(in srgb, var(--line) 40%, var(--brand) 30%);
+  transform: translateY(-2px);
+}
+
+.card-ico {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-line);
+  color: var(--brand);
+  margin-bottom: 15px;
+}
+
+.card-ico svg { width: 18px; height: 18px; }
+
+.card h3 {
+  margin: 0 0 7px;
+  font-size: 16px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.72;
+}
+
+.card code,
+.fine code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--panel-hi);
+  border: 1px solid var(--line-soft);
+  color: var(--fg);
+}
+
+@media (max-width: 980px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .cards { grid-template-columns: 1fr; } }
+
+/* ---- 音质表 ---- */
+
+.table-panel {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+thead th {
+  padding: 13px 20px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 15px 20px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr { transition: background 0.18s ease; }
+tbody tr:hover { background: rgba(255, 255, 255, 0.02); }
+:root[data-theme="light"] tbody tr:hover { background: rgba(0, 0, 0, 0.015); }
+
+td .tier { font-weight: 600; }
+td.dim { color: var(--muted); }
+td .wire { color: var(--faint); }
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.tag::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tag-ok { color: var(--brand); background: var(--brand-soft); border-color: var(--brand-line); }
+.tag-off { color: var(--faint); background: transparent; border-color: var(--line); }
+.tag-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+
+.fine {
+  margin: 18px 0 0;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1.75;
+  max-width: 860px;
+}
+
+.fine strong { color: var(--muted); font-weight: 600; }
+
+@media (max-width: 720px) {
+  thead { display: none; }
+  tbody tr { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 14px 16px; border-bottom: 1px solid var(--line-soft); }
+  tbody tr:last-child { border-bottom: 0; }
+  tbody td { padding: 0; border: 0; }
+  tbody td:nth-child(2) { text-align: right; }
+  tbody td:nth-child(3) { grid-column: 1 / -1; font-size: 12.5px; color: var(--faint); }
+  tbody td:nth-child(4) { grid-column: 1 / -1; margin-top: 8px; }
+}
+
+/* ---- 立场 ---- */
+
+.stance {
+  margin-top: 96px;
+  padding: 40px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  background:
+    linear-gradient(180deg, var(--brand-soft), transparent 62%),
+    var(--panel);
+  position: relative;
+  overflow: hidden;
+}
+
+.stance blockquote {
+  margin: 0;
+  font-size: clamp(20px, 2.6vw, 29px);
+  font-weight: 660;
+  line-height: 1.45;
+  letter-spacing: -0.025em;
+  max-width: 22em;
+}
+
+.stance blockquote span { color: var(--brand); }
+
+.stance .why {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 14.5px;
+  max-width: 44em;
+}
+
+.points {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 26px;
+  margin: 34px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: p;
+}
+
+.points li {
+  counter-increment: p;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 13.5px;
+  line-height: 1.72;
+  color: var(--muted);
+}
+
+.points li::before {
+  content: "0" counter(p);
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--brand);
+}
+
+.points b { color: var(--fg); font-weight: 600; }
+
+@media (max-width: 860px) {
+  .stance { padding: 28px 22px; margin-top: 68px; }
+  .points { grid-template-columns: 1fr; gap: 18px; }
+}
+
+/* ---- 技术 ---- */
+
+.tech {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 40px;
+  align-items: start;
+}
+
+.tech-list { display: grid; gap: 22px; }
+
+.tech-item h3 {
+  margin: 0 0 5px;
+  font-size: 15px;
+  font-weight: 640;
+}
+
+.tech-item h3 .k {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-right: 8px;
+  letter-spacing: 0.06em;
+}
+
+.tech-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.72;
+}
+
+.code-panel {
+  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--bg) 55%, #000 45%);
+  overflow: hidden;
+}
+
+:root[data-theme="light"] .code-panel { background: #fcfcfd; }
+
+.code-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.code-bar i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+  display: inline-block;
+}
+
+pre {
+  margin: 0;
+  padding: 18px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.95;
+  color: var(--muted);
+}
+
+pre .c { color: var(--faint); }
+pre .p { color: var(--brand); }
+pre .f { color: var(--fg); }
+
+@media (max-width: 900px) { .tech { grid-template-columns: 1fr; gap: 28px; } }
+
+/* ---- 下载 ---- */
+
+.dl-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+
+.dl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 22px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  transition: border-color 0.22s ease, background 0.22s ease;
+}
+
+.dl-card.rec {
+  border-color: var(--brand-line);
+  background: linear-gradient(180deg, var(--brand-soft), transparent 55%), var(--panel);
+}
+
+.dl-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dl-head svg { width: 19px; height: 19px; color: var(--muted); }
+.dl-card.rec .dl-head svg { color: var(--brand); }
+
+.dl-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.dl-badge {
+  margin-left: auto;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dl-file {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--faint);
+  word-break: break-all;
+  line-height: 1.6;
+  min-height: 2.6em;
+}
+
+.dl-actions { display: grid; gap: 8px; margin-top: auto; }
+
+.dl-alt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.dl-alt:hover { background: var(--panel-hi); color: var(--fg); border-color: var(--line); }
+.dl-alt span { color: var(--faint); font-family: var(--font-mono); font-size: 11px; }
+
+.all-links {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.all-links a { color: var(--muted); }
+.all-links a:hover { color: var(--fg); }
+
+@media (max-width: 900px) { .dl-grid { grid-template-columns: 1fr; } }
+
+/* ---- 安装须知 ---- */
+
+.notes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.note {
+  padding: 20px 22px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+}
+
+.note h4 {
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  font-weight: 640;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note h4 .dotw {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.note p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg) 50%, #000 50%);
+  border: 1px solid var(--line-soft);
+}
+
+:root[data-theme="light"] .cmd { background: #f2f3f5; }
+
+.cmd code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-x: auto;
+  white-space: nowrap;
+  border: 0;
+  background: none;
+  padding: 0;
+  flex: 1;
+}
+
+.copy-btn {
+  flex: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--faint);
+  border-radius: 7px;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.copy-btn:hover { color: var(--fg); background: var(--panel-hi); }
+.copy-btn.done { color: var(--brand); border-color: var(--brand-line); }
+
+@media (max-width: 800px) { .notes { grid-template-columns: 1fr; } }
+
+/* ---- FAQ ---- */
+
+.faq { max-width: 820px; }
+
+details {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 4px 0;
+}
+
+details[open] { padding-bottom: 8px; }
+
+summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 16px 34px 16px 0;
+  position: relative;
+  font-size: 15px;
+  font-weight: 560;
+  letter-spacing: -0.01em;
+  transition: color 0.18s ease;
+}
+
+summary::-webkit-details-marker { display: none; }
+summary:hover { color: var(--brand); }
+
+summary::after {
+  content: "";
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-top: -5px;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(45deg);
+  transition: transform 0.22s ease;
+}
+
+details[open] summary::after { transform: rotate(-135deg); margin-top: -2px; }
+
+details p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.78;
+  max-width: 46em;
+}
+
+details p:last-child { margin-bottom: 4px; }
+details code {
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--panel-hi);
+  border: 1px solid var(--line-soft);
+}
+
+/* ---- 页脚 ---- */
+
+footer {
+  margin-top: 96px;
+  border-top: 1px solid var(--line-soft);
+  padding: 40px 0 56px;
+}
+
+.foot {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 32px;
+}
+
+.foot-brand { display: flex; flex-direction: column; gap: 10px; max-width: 34ch; }
+
+.foot-brand .brand { font-size: 14px; }
+
+.foot-brand p {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.foot h5 {
+  margin: 0 0 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.foot ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+
+.foot ul a {
+  color: var(--muted);
+  font-size: 13px;
+  transition: color 0.18s ease;
+}
+
+.foot ul a:hover { color: var(--fg); }
+
+.foot-bottom {
+  margin-top: 36px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .foot { grid-template-columns: 1fr 1fr; }
+  .foot-brand { grid-column: 1 / -1; max-width: none; }
+  footer { margin-top: 68px; }
+}
+
+/* ---- 入场动画 ---- */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.7s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.reveal.in { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .reveal { opacity: 1; transform: none; transition: none; }
+  .btn:hover, .card:hover { transform: none; }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+</style>
+<noscript>
+  <style>
+    .reveal { opacity: 1 !important; transform: none !important; }
+  </style>
+</noscript>
+</head>
+
+<body>
+<a class="sr-only" href="#download">跳到下载</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="TinyMusic 首页">
+      <img src="assets/icon.png" width="28" height="28" alt="" />
+      TinyMusic
+    </a>
+
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#features">功能</a>
+      <a href="#quality">音质</a>
+      <a href="#tech">技术</a>
+      <a href="#download">下载</a>
+      <a href="#faq">常见问题</a>
+    </nav>
+
+    <div class="nav-side">
+      <button class="icon-btn" id="theme-btn" type="button" aria-label="切换主题" title="主题：跟随系统">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 3v1.6M12 19.4V21M3 12h1.6M19.4 12H21M5.6 5.6l1.15 1.15M17.25 17.25l1.15 1.15M18.4 5.6l-1.15 1.15M6.75 17.25L5.6 18.4"/></svg>
+      </button>
+      <a class="gh-btn" id="gh-btn" href="https://github.com/RedCarl/TinyMusic" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        <span>GitHub</span>
+        <span class="count" id="star-count" hidden></span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ================= Hero ================= -->
+  <div class="wrap hero">
+    <p class="eyebrow"><span class="dot"></span>Tauri 2 · Svelte 5 · Rust · MIT</p>
+
+    <h1>听歌，<br />也把歌<span class="accent">留下</span>。</h1>
+
+    <p class="lede">
+      <strong>TinyMusic</strong> 是一个 4.5 MB 的跨平台桌面音乐客户端——搜索、试听、下载、
+      逐行歌词、网盘备份都在一个窗口里。匿名接口拿得到的歌都给到，拿不到的就<strong>明确置灰</strong>，
+      而不是让你盯着「正在搜索」。
+    </p>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" id="hero-download" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>
+        <span id="hero-download-label">下载最新版本</span>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/RedCarl/TinyMusic" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        查看源码
+      </a>
+    </div>
+
+    <p class="hero-meta">
+      <span id="version-line">最新版本 · 自动更新</span>
+      <i class="sep"></i><span>Windows 10/11 · macOS 11+</span>
+      <i class="sep"></i><span>约 3–4 MB 安装包</span>
+    </p>
+
+    <div class="shot-wrap reveal" id="shot">
+      <figure class="shot">
+        <img src="assets/screenshot.jpg" width="1915" height="1123" alt="TinyMusic 主界面：左侧导航、每日推荐、歌单货架与底部播放器" loading="eager" decoding="async" />
+        <figcaption>主界面 · 每日推荐 / 歌单货架 / 播放器</figcaption>
+      </figure>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><b>4.5 MB</b><span>macOS 应用本体</span></div>
+      <div class="stat"><b>105 KB</b><span>前端 JS（零 UI 框架）</span></div>
+      <div class="stat"><b>6 档</b><span>音质，3 档可播 / 3 档置灰</span></div>
+      <div class="stat"><b>0 个</b><span>必须注册的账号</span></div>
+    </div>
+  </div>
+
+  <!-- ================= 功能 ================= -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div>
+          <span class="sec-idx">01 / 功能</span>
+          <h2>该有的都有，边界也写在脸上。</h2>
+        </div>
+        <p class="sec-note">
+          没有会员解锁按钮，没有「登录后可用」的灰色诱惑。能做的一步到位，做不到的当场说明原因。
+        </p>
+      </div>
+
+      <div class="cards">
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg></span>
+          <h3>搜索、艺人、专辑</h3>
+          <p>结果按热度排序。艺人页和专辑页不需要额外端点，直接按 <code>ARTISTID</code> / <code>ALBUMID</code> 从搜索结果里归组——搜「周杰伦」50 条结果归出 18 张专辑。</p>
+        </article>
+
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v-4M8 18V6M12 16V8M16 20V4M20 13v-2"/></svg></span>
+          <h3>六档音质，只信文件头</h3>
+          <p>128k / 320k / FLAC 可播。播放前用 <code>fLaC</code> 魔数和字节数、时长反推实际格式：请求无损只拿到 320 时，界面显示真实格式并标「已降级」。</p>
+        </article>
+
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h13M4 12h9M4 17h13"/><circle cx="19" cy="12" r="2"/></svg></span>
+          <h3>逐行歌词</h3>
+          <p>Apple Music 那种排版的歌词页：当前行高亮居中，其余淡出，滚动跟随播放进度，点任意一行从那里开始。</p>
+        </article>
+
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><path d="m8 10 4 4 4-4"/><path d="M5 19h14"/><path d="M5 15.5v.5a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3v-.5"/></svg></span>
+          <h3>下载就是一份能带走的文件</h3>
+          <p>先写 <code>.part</code>，落盘后校验大小与时长，通过才写入 ID3v2.3 标签、封面和歌词并改名。命中占位特征就删文件报错，绝不留一首 11 秒的「假歌」。</p>
+        </article>
+
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .8-7.92A6 6 0 0 0 6.1 9.2 4.4 4.4 0 0 0 7 18Z"/><path d="M12 12.5v4.5"/><path d="m10 14.5 2-2 2 2"/></svg></span>
+          <h3>网盘歌单（S3）</h3>
+          <p>填一个兼容 S3 的桶，就能把下载直接上传、在网盘里建歌单、跨设备取回。密钥只存在本机 SQLite，支持连通性自检。</p>
+        </article>
+
+        <article class="card reveal">
+          <span class="card-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m10 8.5 5 3.5-5 3.5Z"/></svg></span>
+          <h3>播放器细节</h3>
+          <p>随机与循环是两个独立开关（列表 / 单曲 / 关）。进度条平时只是一条细线，悬停才展开滑块和时间；音量是按住才出现的药丸，不会误触跳变。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 音质 ================= -->
+  <section id="quality">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div>
+          <span class="sec-idx">02 / 音质</span>
+          <h2>六档都在，但只点亮拿得到的。</h2>
+        </div>
+        <p class="sec-note">
+          后三档在平台目录里真实存在，匿名公开接口却只返回占位文件或明文 FLAC，拿不到加密地址与密钥——所以直接禁用，不拿它做噱头。
+        </p>
+      </div>
+
+      <div class="table-panel reveal">
+        <table>
+          <thead>
+            <tr><th>档位</th><th>协议标记</th><th>目标</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="tier">标准 128k</td>
+              <td class="wire mono">standard</td>
+              <td class="dim">128k 有损</td>
+              <td><span class="tag tag-ok">可播</span></td>
+            </tr>
+            <tr>
+              <td class="tier">高品质 320k</td>
+              <td class="wire mono">super</td>
+              <td class="dim">320k 有损</td>
+              <td><span class="tag tag-ok">可播</span></td>
+            </tr>
+            <tr>
+              <td class="tier">无损</td>
+              <td class="wire mono">lossless</td>
+              <td class="dim">FLAC 16/44.1 起</td>
+              <td><span class="tag tag-ok">按曲目可播</span></td>
+            </tr>
+            <tr>
+              <td class="tier">Hi-Res</td>
+              <td class="wire mono">hires</td>
+              <td class="dim">高解析度</td>
+              <td><span class="tag tag-off">需会员，置灰</span></td>
+            </tr>
+            <tr>
+              <td class="tier">杜比全景声</td>
+              <td class="wire mono">atmos</td>
+              <td class="dim">空间音频</td>
+              <td><span class="tag tag-off">需会员，置灰</span></td>
+            </tr>
+            <tr>
+              <td class="tier">母带</td>
+              <td class="wire mono">master</td>
+              <td class="dim">母带级</td>
+              <td><span class="tag tag-off">需会员，置灰</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="fine reveal">
+        列表接口自带 <strong>MINFO</strong>，能提前判断某首曲目有没有无损：有就显示「无损」徽标，没有就把该档禁用——不让你点完才失败。
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= 立场 ================= -->
+  <div class="wrap">
+    <div class="stance reveal">
+      <blockquote>宁可显示<span>「不可用」</span>，<br />也不假装能播。</blockquote>
+      <p class="why">
+        这条设计立场不是口号，它决定了三个实现细节。它们都是从平台客户端实测出来的，不是猜的。
+      </p>
+      <ol class="points">
+        <li><b>搜索返回的不是 JSON。</b>是 Python dict 字面量：单引号、裸整数，值里还嵌着 <code>&amp;apos;</code>、<code>&amp;nbsp;</code> 和四层反斜杠。所以我们写了一个递归下降解析器，而不是「把单引号替换成双引号」。</li>
+        <li><b>匿名档位封在 128k。</b>请求 320k 时，服务端按「歌曲 × 音质」确定性地返回一个 181,521 字节 / 11.311 秒的占位文件。它会在下载校验时被识别，文件直接删掉，不会留在你的硬盘上。</li>
+        <li><b><code>payInfo</code> 不可信。</b>有些曲目明面上四档全允许，实际仍然只给占位。所以可用性只认「真实取链 + 大小 / 时长校验」这一条：<code>available</code> / <code>preview_only</code> / <code>unavailable</code>。</li>
+      </ol>
+    </div>
+  </div>
+
+  <!-- ================= 技术 ================= -->
+  <section id="tech">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div>
+          <span class="sec-idx">03 / 技术</span>
+          <h2>小体积是设计出来的，不是删出来的。</h2>
+        </div>
+        <p class="sec-note">
+          Rust 侧没有 <code>hyper</code> / <code>anyhow</code> / <code>regex</code> / <code>chrono</code>；
+          前端除 Svelte 运行时外没有 UI 框架。协议层是独立的 crate，可以脱离界面单独测试。
+        </p>
+      </div>
+
+      <div class="tech">
+        <div class="tech-list">
+          <div class="tech-item reveal">
+            <h3><span class="k">proxy.rs</span>本地流代理</h3>
+            <p>会过期的 CDN 直链藏在后端，前端只拿到 5 分钟有效的本地 token；手写 HTTP/1.1 透传 <code>Range</code>，所以 <code>&lt;audio&gt;</code> 能拖进度条。</p>
+          </div>
+          <div class="tech-item reveal">
+            <h3><span class="k">http.rs</span>限流与退避</h3>
+            <p>按主机令牌桶（默认 1 请求 / 700ms）、并发闸门 3、指数退避；详情接口的 <code>{"status":301}</code> 软限流会被识别并重试，重试耗尽就降级为「只用已有元数据」，不阻塞播放。</p>
+          </div>
+          <div class="tech-item reveal">
+            <h3><span class="k">download.rs</span>下载防护</h3>
+            <p>流式写盘、校验、命中占位就删除，只有通过校验的文件才会被写上标签并最终命名。</p>
+          </div>
+          <div class="tech-item reveal">
+            <h3><span class="k">storage.rs</span>本机 SQLite</h3>
+            <p>曲目、下载记录、收藏、歌单、设置全部存在本地一个数据库里，不同步、不上传，换机器就是一份干净的拷贝。</p>
+          </div>
+        </div>
+
+        <div class="code-panel reveal">
+          <div class="code-bar"><i></i><i></i><i></i><span style="margin-left:6px">tinymusic/</span></div>
+<pre><span class="c"># 协议核心：零 UI 依赖，秒级测试</span>
+<span class="p">core/</span>
+  kwjson.rs    <span class="c">「伪 JSON」递归下降解析器</span>
+  quality.rs   <span class="c">音质解析 / 文件头校验</span>
+  proxy.rs     <span class="c">本地流代理（Range 透传）</span>
+  download.rs  <span class="c">流式下载 + 校验 + 命名</span>
+  id3.rs       <span class="c">ID3v2.3 标签（UTF-16）</span>
+  storage.rs   <span class="c">SQLite：曲目 / 下载 / 收藏</span>
+
+<span class="p">src-tauri/</span>   <span class="c">IPC 命令 + 状态装配</span>
+<span class="p">src/</span>         <span class="c">Svelte 5 前端</span>
+
+<span class="c">$ cargo test -p tinymusic-core</span>
+<span class="c"># 不依赖 Tauri，秒级跑完</span></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 下载 ================= -->
+  <section id="download">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div>
+          <span class="sec-idx">04 / 下载</span>
+          <h2>选你的系统，一步装好。</h2>
+        </div>
+        <p class="sec-note" id="dl-note">
+          安装包直接从 GitHub Releases 取，带自动更新签名文件；之后新版本在应用内「设置 → 版本」一键升级。
+        </p>
+      </div>
+
+      <div class="dl-grid">
+        <article class="dl-card" data-platform="windows">
+          <div class="dl-head">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6 10.4 4.6v6.8H3V5.6Zm0 7.4h7.4v6.8L3 18.8V13Zm9-8.7L21 3v8.4h-9V4.3Zm0 8.7h9V21l-9-1.3V13Z"/></svg>
+            <h3>Windows</h3>
+            <span class="dl-badge" data-rec hidden>推荐</span>
+          </div>
+          <p class="dl-file" data-file="exe">Windows 10 / 11 · x64 安装包</p>
+          <div class="dl-actions">
+            <a class="btn btn-primary btn-block" data-asset="exe" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/></svg>
+              <span data-label>下载 .exe</span>
+            </a>
+            <a class="dl-alt" data-asset="msi" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
+              .msi 安装包 <span data-size="msi"></span>
+            </a>
+          </div>
+        </article>
+
+        <article class="dl-card" data-platform="mac">
+          <div class="dl-head">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.7.8-3.4.8-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.3-2.5 1.3-2.6-.1 0-2.6-1-2.6-3.8ZM14.2 5.7c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.7-1.3Z"/></svg>
+            <h3>macOS</h3>
+            <span class="dl-badge" data-rec hidden>推荐</span>
+          </div>
+          <p class="dl-file" data-file="dmg-arm">macOS 11+ · Apple 芯片 / Intel</p>
+          <div class="dl-actions">
+            <a class="btn btn-primary btn-block" data-asset="dmg-arm" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/></svg>
+              <span data-label>下载 .dmg · Apple 芯片</span>
+            </a>
+            <a class="dl-alt" data-asset="dmg-x64" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
+              Intel 芯片版 <span data-size="dmg-x64"></span>
+            </a>
+          </div>
+        </article>
+
+        <article class="dl-card">
+          <div class="dl-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3.5 8.5 4.4L12 12.3 3.5 7.9 12 3.5Z"/><path d="m3.5 12.2 8.5 4.4 8.5-4.4"/><path d="m3.5 16.4 8.5 4.4 8.5-4.4"/></svg>
+            <h3>全部版本</h3>
+          </div>
+          <p class="dl-file">历史版本、校验签名、更新清单</p>
+          <div class="dl-actions">
+            <a class="btn btn-ghost btn-block" href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">
+              打开 Releases
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 5h5v5"/><path d="M19 5 9.5 14.5"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>
+            </a>
+            <a class="dl-alt" href="https://github.com/RedCarl/TinyMusic/releases/latest/download/latest.json" target="_blank" rel="noopener">
+              自动更新清单 <span>latest.json</span>
+            </a>
+          </div>
+        </article>
+      </div>
+
+      <div class="all-links reveal">
+        <span id="dl-stats">正在从 GitHub 获取最新版本信息…</span>
+        <a href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">全部历史版本 →</a>
+      </div>
+
+      <div class="notes">
+        <div class="note reveal">
+          <h4><span class="dotw"></span>macOS 首次打开被拦</h4>
+          <p>应用没有做 Apple 公证（个人开发者账号成本不划算），首次打开若提示「已损坏，无法打开」：在 Finder 里<strong>右键 → 打开</strong>，或执行下面这行。</p>
+          <div class="cmd">
+            <code id="xattr-cmd">xattr -dr com.apple.quarantine /Applications/TinyMusic.app</code>
+            <button class="copy-btn" type="button" data-copy="xattr-cmd">复制</button>
+          </div>
+        </div>
+
+        <div class="note reveal">
+          <h4><span class="dotw"></span>Windows 的 SmartScreen</h4>
+          <p>安装包没有做 Authenticode 签名，SmartScreen 可能提示「Windows 已保护你的电脑」：点<strong>更多信息 → 仍要运行</strong>。部分国产杀软会把「媒体文件创建后删除」判成异常行为——上传网盘已改成内存直传，不再产生临时文件。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FAQ ================= -->
+  <section id="faq">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <div>
+          <span class="sec-idx">05 / 常见问题</span>
+          <h2>先回答你最想问的。</h2>
+        </div>
+      </div>
+
+      <div class="faq">
+        <details class="reveal">
+          <summary>为什么有些歌是灰的，点了没反应？</summary>
+          <p>因为确实拿不到。会员专享、已下架、或只在付费档位提供的曲目，匿名公开接口不会给出可下载的地址。应用会在详情页就把它标成 <code>unavailable</code> 并禁用按钮，列表里也会提前用 <code>MINFO</code> 把没有无损的档位关掉。</p>
+          <p>点不动的按钮，比点完等三十秒再失败要诚实。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>需要登录吗？会同步我的账号吗？</summary>
+          <p>不需要登录，也没有账号体系。曲库、下载记录、收藏、歌单、设置全部存在本机 SQLite（<code>%APPDATA%/com.tinymusic.app</code> 或 macOS 的 Application Support），不会上传到任何服务器。</p>
+          <p>唯一的网络出口是：平台的公开 HTTP 接口（取搜索、取流地址）、你自己填的 S3 桶、以及 GitHub 的更新清单。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>支持哪些音源？</summary>
+          <p>目前是酷我的匿名公开接口，协议层独立在 <code>core/src/providers/kuwo/</code>。新增平台要在 <code>core/src/providers/mod.rs</code> 注册，并且单独做一轮协议逆向——工作量不小，所以没有做「一键支持所有平台」的承诺。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>下载的文件在哪？能导入别的播放器吗？</summary>
+          <p>默认在系统的音乐目录，可以在设置里改。文件是标准 MP3 / FLAC，带 ID3v2.3 标签（标题、艺人、专辑、封面、歌词），iTunes、Apple Music、foobar2000、手机自带播放器都能直接读。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>网盘是什么？必须用吗？</summary>
+          <p>可选。填一个兼容 S3 的对象存储（阿里云 OSS、Cloudflare R2、MinIO、各类 S3 兼容服务都行），就能把下载直接上传、在网盘页建歌单、换设备后取回。不填也不影响本地使用。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>自动更新是怎么做的？安全吗？</summary>
+          <p>应用每次启动 2.5 秒后静默查一次更新，之后每 6 小时一次，只比较版本号；有新版本才在侧边栏「设置」旁点一颗小红点，不弹窗。安装包用 minisign 签名，公钥内置在应用里，签名不匹配就拒绝安装。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>为什么体积这么小？</summary>
+          <p>因为用的是系统自带的 WebView（WebView2 / WKWebView）而不是打包整个 Chromium，Rust 侧也刻意避开了大依赖，release 构建开了 <code>opt-level="z"</code> + LTO + strip。代价是 macOS 最低要求 11、Windows 需要 WebView2 运行时（Win11 自带，Win10 一般也已安装）。</p>
+        </details>
+
+        <details class="reveal">
+          <summary>可以商用吗？</summary>
+          <p>代码是 MIT。但请注意：本项目只实现公开 HTTP 接口，不包含、不分发任何平台二进制或音频资源，曲库与音频版权归平台方所有——请勿用于商业用途。</p>
+        </details>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div class="foot-brand">
+        <a class="brand" href="#top">
+          <img src="assets/icon.png" width="24" height="24" alt="" />
+          TinyMusic
+        </a>
+        <p>轻量级桌面音乐客户端。Tauri 2 + Svelte 5 + Rust，协议层与界面完全解耦，MIT 开源。</p>
+      </div>
+
+      <div>
+        <h5>项目</h5>
+        <ul>
+          <li><a href="https://github.com/RedCarl/TinyMusic" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">版本发布</a></li>
+          <li><a href="https://github.com/RedCarl/TinyMusic/issues" target="_blank" rel="noopener">问题反馈</a></li>
+          <li><a href="https://github.com/RedCarl/TinyMusic/blob/main/README.md" target="_blank" rel="noopener">技术说明</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <h5>本站</h5>
+        <ul>
+          <li><a href="#features">功能</a></li>
+          <li><a href="#quality">音质</a></li>
+          <li><a href="#download">下载</a></li>
+          <li><a href="#faq">常见问题</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="foot-bottom">
+      <span>© 2026 TinyMusic · MIT License</span>
+      <span>仅实现公开 HTTP 接口，不包含、不分发任何音频资源。</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var REPO = "RedCarl/TinyMusic";
+  var RELEASES = "https://github.com/" + REPO + "/releases";
+
+  /* ---------------- 主题 ---------------- */
+  var root = document.documentElement;
+  var themeBtn = document.getElementById("theme-btn");
+  var order = ["auto", "light", "dark"];
+  var labels = { auto: "跟随系统", light: "浅色", dark: "深色" };
+  var icons = {
+    auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17" /><path d="M12 3.5a8.5 8.5 0 0 1 0 17Z" fill="currentColor" stroke="none"/></svg>',
+    light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 3v1.6M12 19.4V21M3 12h1.6M19.4 12H21M5.6 5.6l1.15 1.15M17.25 17.25l1.15 1.15M18.4 5.6l-1.15 1.15M6.75 17.25L5.6 18.4"/></svg>',
+    dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 13.5A8 8 0 0 1 10.5 4a8 8 0 1 0 9.5 9.5Z"/></svg>'
+  };
+
+  var mql = window.matchMedia("(prefers-color-scheme: light)");
+  var saved = null;
+  try { saved = localStorage.getItem("tm-theme"); } catch (e) {}
+  var mode = order.indexOf(saved) > -1 ? saved : "auto";
+
+  function resolve(m) {
+    if (m === "auto") return mql.matches ? "light" : "dark";
+    return m;
+  }
+
+  function paint() {
+    root.dataset.theme = resolve(mode);
+    if (themeBtn) {
+      themeBtn.innerHTML = icons[mode];
+      themeBtn.title = "主题：" + labels[mode];
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", resolve(mode) === "light" ? "#f6f6f7" : "#0e0f10");
+  }
+
+  paint();
+
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      mode = order[(order.indexOf(mode) + 1) % order.length];
+      try { localStorage.setItem("tm-theme", mode); } catch (e) {}
+      paint();
+    });
+  }
+
+  if (mql.addEventListener) {
+    mql.addEventListener("change", function () { if (mode === "auto") paint(); });
+  }
+
+  /* ---------------- 顶部栏描边 ---------------- */
+  var nav = document.getElementById("nav");
+  function onScroll() {
+    if (!nav) return;
+    nav.classList.toggle("scrolled", window.scrollY > 6);
+  }
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  /* ---------------- 入场动画 ---------------- */
+  var reveals = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
+  if ("IntersectionObserver" in window && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("in");
+          io.unobserve(entry.target);
+        }
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.06 });
+    reveals.forEach(function (el) { io.observe(el); });
+  } else {
+    reveals.forEach(function (el) { el.classList.add("in"); });
+  }
+
+  /* ---------------- 复制 ---------------- */
+  document.querySelectorAll("[data-copy]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var el = document.getElementById(btn.dataset.copy);
+      if (!el) return;
+      var text = el.textContent;
+      var done = function () {
+        btn.textContent = "已复制";
+        btn.classList.add("done");
+        setTimeout(function () {
+          btn.textContent = "复制";
+          btn.classList.remove("done");
+        }, 1600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {});
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+
+  /* ---------------- 版本与下载 ---------------- */
+  function fmtSize(bytes) {
+    if (!bytes) return "";
+    var mb = bytes / 1048576;
+    return (mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)) + " MB";
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var p = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function detectOS() {
+    var ua = navigator.userAgent || "";
+    if (/Windows NT/i.test(ua)) return "windows";
+    if (/Mac OS X|Macintosh/i.test(ua) && !/iPhone|iPad/i.test(ua)) return "mac";
+    return "";
+  }
+
+  function pick(assets, test) {
+    for (var i = 0; i < assets.length; i++) {
+      if (test(assets[i].name)) return assets[i];
+    }
+    return null;
+  }
+
+  function setLink(sel, asset, fallbackHref) {
+    document.querySelectorAll('[data-asset="' + sel + '"]').forEach(function (a) {
+      a.href = asset ? asset.browser_download_url : fallbackHref;
+      if (asset) {
+        var holder = a.querySelector('[data-size="' + sel + '"]');
+        if (!holder) holder = document.querySelector('[data-size="' + sel + '"]');
+        if (holder) holder.textContent = fmtSize(asset.size);
+      }
+    });
+  }
+
+  function setFile(sel, asset, fallback) {
+    document.querySelectorAll('[data-file="' + sel + '"]').forEach(function (el) {
+      el.textContent = asset ? asset.name : fallback;
+    });
+  }
+
+  function markRecommended(os) {
+    document.querySelectorAll("[data-platform]").forEach(function (card) {
+      var badge = card.querySelector("[data-rec]");
+      var match = card.dataset.platform === os;
+      card.classList.toggle("rec", match);
+      if (badge) badge.hidden = !match;
+    });
+  }
+
+  function applyRelease(rel) {
+    var assets = (rel && rel.assets) || [];
+    var exe = pick(assets, function (n) { return /x64-setup\.exe$/i.test(n); }) ||
+              pick(assets, function (n) { return /\.exe$/i.test(n); });
+    var msi = pick(assets, function (n) { return /x64.*\.msi$/i.test(n); }) ||
+              pick(assets, function (n) { return /\.msi$/i.test(n); });
+    var dmgArm = pick(assets, function (n) { return /aarch64.*\.dmg$/i.test(n); });
+    var dmgX64 = pick(assets, function (n) { return /x64.*\.dmg$/i.test(n); });
+
+    setLink("exe", exe, RELEASES + "/latest");
+    setLink("msi", msi, RELEASES + "/latest");
+    setLink("dmg-arm", dmgArm, RELEASES + "/latest");
+    setLink("dmg-x64", dmgX64, RELEASES + "/latest");
+
+    setFile("exe", exe, "Windows 10 / 11 · x64 安装包");
+    setFile("dmg-arm", dmgArm || dmgX64, "macOS 11+ · Apple 芯片 / Intel");
+
+    if (rel && rel.tag_name) {
+      var line = document.getElementById("version-line");
+      if (line) {
+        line.textContent = rel.tag_name + " · " + fmtDate(rel.published_at) + " 发布";
+      }
+      var dlStats = document.getElementById("dl-stats");
+      if (dlStats) {
+        var total = 0;
+        assets.forEach(function (a) {
+          if (/\.sig$/i.test(a.name) || /latest\.json$/i.test(a.name)) return;
+          total += a.download_count || 0;
+        });
+        var parts = [rel.tag_name + " 已发布"];
+        if (total > 0) parts.push("累计 " + total.toLocaleString("en-US") + " 次下载");
+        parts.push("MIT 开源");
+        dlStats.textContent = parts.join(" · ");
+      }
+      var heroLink = document.getElementById("hero-download");
+      var os = detectOS();
+      if (heroLink) {
+        if (os === "windows" && exe) heroLink.href = exe.browser_download_url;
+        else if (os === "mac" && (dmgArm || dmgX64)) heroLink.href = (dmgArm || dmgX64).browser_download_url;
+        else heroLink.href = rel.html_url || RELEASES + "/latest";
+      }
+    }
+  }
+
+  var os = detectOS();
+  markRecommended(os);
+
+  var heroLabel = document.getElementById("hero-download-label");
+  if (heroLabel) {
+    heroLabel.textContent = os === "windows" ? "下载 Windows 版"
+      : os === "mac" ? "下载 macOS 版"
+      : "下载最新版本";
+  }
+
+  var timeout = setTimeout(function () {
+    var el = document.getElementById("dl-stats");
+    if (el) el.textContent = "版本信息获取失败，可直接前往 Releases 下载。";
+  }, 8000);
+
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+    .then(function (rel) { clearTimeout(timeout); applyRelease(rel); })
+    .catch(function () {
+      clearTimeout(timeout);
+      var el = document.getElementById("dl-stats");
+      if (el) el.innerHTML = '最新版本请前往 <a href="' + RELEASES + '/latest" target="_blank" rel="noopener">Releases</a> 查看。';
+    });
+
+  fetch("https://api.github.com/repos/" + REPO)
+    .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.json(); })
+    .then(function (repo) {
+      var el = document.getElementById("star-count");
+      if (el && repo.stargazers_count > 0) {
+        el.textContent = repo.stargazers_count > 999
+          ? (repo.stargazers_count / 1000).toFixed(1) + "k"
+          : String(repo.stargazers_count);
+        el.hidden = false;
+      }
+    })
+    .catch(function () {});
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,42 @@
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 启用并配置 Pages
+        uses: actions/configure-pages@v5
+        with:
+          # 首次运行时自动把仓库的 Pages 打开（Source 设为 GitHub Actions）
+          enablement: true
+
+      - name: 上传站点
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4
