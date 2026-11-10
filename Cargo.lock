@@ -4096,7 +4096,7 @@ dependencies = [
 
 [[package]]
 name = "tinymusic"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4111,7 +4111,7 @@ dependencies = [
 
 [[package]]
 name = "tinymusic-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
