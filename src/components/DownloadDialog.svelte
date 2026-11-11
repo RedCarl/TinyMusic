@@ -2,6 +2,7 @@
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { fmtDuration } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
+  import Icon from './Icon.svelte';
   import {
     downloadUi,
     closeDownloadDialog,
@@ -139,7 +140,7 @@
       <div class="modal-actions">
         <button class="mini" onclick={close} disabled={downloadUi.busy}>取消</button>
         <button class="primary" onclick={start} disabled={downloadUi.busy || count === 0}>
-          <HugeiconsIcon
+          <Icon
             icon={downloadUi.mode === 's3' ? icons.cloud : icons.download}
             size={ICON_SIZE.inline}
           />

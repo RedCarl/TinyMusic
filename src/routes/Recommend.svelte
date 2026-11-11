@@ -9,6 +9,7 @@
   import { playTrack } from '../lib/player.svelte';
   import { showToast } from '../lib/toast.svelte';
   import TrackRow from '../components/TrackRow.svelte';
+  import Icon from '../components/Icon.svelte';
   import TrackListSkeleton from '../components/TrackListSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
 
@@ -284,7 +285,7 @@
                     void playPlaylist(pl);
                   }}
                 >
-                  <HugeiconsIcon
+                  <Icon
                     icon={fabBusy === `${pl.provider}:${pl.id}` ? icons.loading : icons.play}
                     size={ICON_SIZE.control}
                   />
@@ -357,7 +358,7 @@
                   void playPlaylist(pl);
                 }}
               >
-                <HugeiconsIcon
+                <Icon
                   icon={fabBusy === `${pl.provider}:${pl.id}` ? icons.loading : icons.play}
                   size={ICON_SIZE.control}
                 />
