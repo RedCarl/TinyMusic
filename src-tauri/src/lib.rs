@@ -530,20 +530,54 @@ async fn player_open(
     track: Track,
     quality: String,
     force_refresh: Option<bool>,
+    allow_local: Option<bool>,
 ) -> Result<PlayerSource, String> {
-    // 网盘里的歌：给一个 6 小时有效的签名直链，不经过平台取链。
+    let q = Quality::parse(&quality).ok_or_else(|| "未知音质".to_string())?;
+
+    // 已经下载到本地的：直接播硬盘上的文件 —— 不走网络，也就没有「直链过期」。
+    // 只有当本地那份音质不低于当前选择时才优先，避免选了 320k 却悄悄播 128k。
+    if track.provider != "s3" && allow_local.unwrap_or(true) {
+        if let Ok(Some(row)) = state.storage.find_local_download(&track.provider, &track.id) {
+            let path = std::path::PathBuf::from(&row.path);
+            let local_quality = Quality::parse(&row.quality).unwrap_or_default();
+            if quality_rank(local_quality) >= quality_rank(q) && path.is_file() {
+                let (_, format) = s3_audio_format(&row.path);
+                let verified = format.codec != Codec::Unknown;
+                let mime = tinymusic_core::proxy::mime_for_path(std::path::Path::new(&row.path));
+                let url = state
+                    .proxy
+                    .register_file(path, Some(mime.to_string()))
+                    .await;
+                return Ok(PlayerSource {
+                    url,
+                    quality: local_quality.as_str().to_string(),
+                    requested_quality: q.as_str().to_string(),
+                    format,
+                    bytes: Some(row.bytes.max(0) as u64),
+                    degraded: false,
+                    verified,
+                    via: "local".into(),
+                });
+            }
+        }
+    }
+
+    // 网盘里的歌：给一个 6 小时有效的签名直链，同样套一层本地代理 ——
+    // WebView 对跨域音视频的 Content-Type / HEAD 更挑，代理统一成 Range + 明确 MIME。
     // 格式按文件后缀推断，UI 显示 FLAC/MP3，而不是笼统的“原文件”。
     if track.provider == "s3" {
         let client = s3_client(&state)?;
-        let url = client
+        let signed = client
             .presign_get(&track.id, 6 * 3600)
             .map_err(|e| e.to_string())?;
         let (actual_quality, format) = s3_audio_format(&track.id);
         let verified = format.codec != Codec::Unknown;
+        let mime = tinymusic_core::proxy::mime_for_path(std::path::Path::new(&track.id));
+        let url = state.proxy.register(signed, Some(mime.to_string())).await;
         return Ok(PlayerSource {
             url,
             quality: actual_quality.as_str().to_string(),
-            requested_quality: quality,
+            requested_quality: q.as_str().to_string(),
             format,
             bytes: None,
             degraded: false,
@@ -552,7 +586,6 @@ async fn player_open(
         });
     }
     let p = state.provider(&track.provider)?;
-    let q = Quality::parse(&quality).ok_or_else(|| "未知音质".to_string())?;
     if force_refresh.unwrap_or(false) {
         p.invalidate_resolve(&track.id);
     }
@@ -672,6 +705,18 @@ async fn download_start(
     });
 
     Ok(task_id)
+}
+
+/// 音质档位的高低，用来判断本地文件能不能顶替当前选择
+fn quality_rank(q: Quality) -> u8 {
+    match q {
+        Quality::Standard => 0,
+        Quality::Super => 1,
+        Quality::Lossless => 2,
+        Quality::HiRes => 3,
+        Quality::Atmos => 4,
+        Quality::Master => 5,
+    }
 }
 
 /// 网盘文件按后缀推断显示格式；不解码、不探测，只用于 UI 文案。

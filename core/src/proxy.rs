@@ -21,8 +21,16 @@ use tokio::sync::Mutex;
 const TOKEN_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 const MAX_HEADER: usize = 8192;
 
+#[derive(Clone)]
+enum Source {
+    /// 远端直链（CDN / 网盘签名地址）
+    Url(String),
+    /// 已经下载到本地的文件
+    File(std::path::PathBuf),
+}
+
 struct Entry {
-    url: String,
+    source: Source,
     /// 以解码后的实际格式为准；CDN 的 `application/octet-stream` 不能直接给 <audio>。
     content_type: Option<String>,
     expires: std::time::Instant,
@@ -86,7 +94,35 @@ impl StreamProxy {
         map.insert(
             token.clone(),
             Entry {
-                url,
+                source: Source::Url(url),
+                content_type,
+                expires: now_i + TOKEN_TTL,
+            },
+        );
+        format!("{}/stream/{}", self.base_url(), token)
+    }
+
+    /// 登记一个本地文件，返回可供前端使用的 URL（离线播放用）。
+    ///
+    /// 走同一个代理，前端只接触 `127.0.0.1`，不用给 WebView 开 `file://` 权限。
+    pub async fn register_file(
+        &self,
+        path: impl Into<std::path::PathBuf>,
+        content_type: Option<String>,
+    ) -> String {
+        let n = self.counter.fetch_add(1, Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let token = format!("{:x}{:x}", now, n);
+        let mut map = self.tokens.lock().await;
+        let now_i = std::time::Instant::now();
+        map.retain(|_, e| e.expires > now_i);
+        map.insert(
+            token.clone(),
+            Entry {
+                source: Source::File(path.into()),
                 content_type,
                 expires: now_i + TOKEN_TTL,
             },
@@ -147,17 +183,24 @@ async fn handle(
         }
     };
 
-    let (url, registered_type) = {
+    let (source, registered_type) = {
         let map = tokens.lock().await;
         match map.get(token) {
-            Some(e) if e.expires > std::time::Instant::now() => {
-                (e.url.clone(), e.content_type.clone())
-            }
+            Some(e) if e.expires > std::time::Instant::now() => (e.source.clone(), e.content_type.clone()),
             _ => {
                 let _ = write_plain(&mut sock, 404, "token expired").await;
                 return Ok(());
             }
         }
+    };
+
+    if let Source::File(path) = &source {
+        return serve_file(&mut sock, path, range.as_deref(), registered_type.as_deref(), method)
+            .await;
+    }
+    let url = match source {
+        Source::Url(u) => u,
+        Source::File(_) => unreachable!(),
     };
 
     // 上游请求（透传 Range）
@@ -226,6 +269,130 @@ async fn handle(
     Ok(())
 }
 
+/// 把本地文件当流媒体发出去：支持 HEAD 与 `Range: bytes=a-b`。
+async fn serve_file(
+    sock: &mut TcpStream,
+    path: &std::path::Path,
+    range: Option<&str>,
+    content_type: Option<&str>,
+    method: &str,
+) -> Result<()> {
+    use tokio::io::{AsyncSeekExt, AsyncReadExt};
+
+    let meta = match tokio::fs::metadata(path).await {
+        Ok(m) => m,
+        Err(_) => {
+            let _ = write_plain(sock, 404, "file missing").await;
+            return Ok(());
+        }
+    };
+    let size = meta.len();
+    let ct = content_type
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| mime_for_path(path).to_string());
+
+    // `bytes=start-` / `bytes=start-end`；其它写法一律当整段
+    let mut start = 0u64;
+    let mut end = size.saturating_sub(1);
+    let mut partial = false;
+    if let Some(raw) = range {
+        if let Some(spec) = raw.trim().strip_prefix("bytes=") {
+            let spec = spec.split(',').next().unwrap_or("").trim();
+            let (a, b) = spec.split_once('-').unwrap_or((spec, ""));
+            let a = a.trim();
+            let b = b.trim();
+            if !a.is_empty() {
+                if let Ok(v) = a.parse::<u64>() {
+                    start = v;
+                }
+            }
+            if !b.is_empty() {
+                if let Ok(v) = b.parse::<u64>() {
+                    end = v.min(size.saturating_sub(1));
+                }
+            }
+            if size == 0 || start >= size {
+                let resp = format!(
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nConnection: close\r\n\r\n",
+                    size
+                );
+                sock.write_all(resp.as_bytes()).await?;
+                return Ok(());
+            }
+            partial = true;
+        }
+    }
+    if end < start {
+        end = start;
+    }
+    let len = end - start + 1;
+
+    let mut head = String::new();
+    head.push_str(if partial {
+        "HTTP/1.1 206 Partial Content\r\n"
+    } else {
+        "HTTP/1.1 200 OK\r\n"
+    });
+    head.push_str(&format!("Content-Type: {}\r\n", ct));
+    head.push_str("Accept-Ranges: bytes\r\n");
+    head.push_str("Access-Control-Allow-Origin: *\r\n");
+    head.push_str("Cache-Control: no-store\r\n");
+    head.push_str(&format!("Content-Length: {}\r\n", len));
+    if partial {
+        head.push_str(&format!("Content-Range: bytes {}-{}/{}\r\n", start, end, size));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    sock.write_all(head.as_bytes()).await?;
+
+    if method == "HEAD" {
+        let _ = sock.shutdown().await;
+        return Ok(());
+    }
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return Ok(()),
+    };
+    if start > 0 {
+        let _ = file.seek(std::io::SeekFrom::Start(start)).await;
+    }
+    let mut left = len;
+    let mut buf = vec![0u8; 64 * 1024];
+    while left > 0 {
+        let want = (buf.len() as u64).min(left) as usize;
+        match file.read(&mut buf[..want]).await {
+            Ok(0) => break,
+            Ok(n) => {
+                if sock.write_all(&buf[..n]).await.is_err() {
+                    break; // 拖动进度条时客户端会主动断开
+                }
+                left -= n as u64;
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = sock.shutdown().await;
+    Ok(())
+}
+
+/// 按扩展名给本地文件一个 WebView 认得出来的 MIME。
+pub fn mime_for_path(path: &std::path::Path) -> &'static str {
+    let lower = path.to_string_lossy().to_ascii_lowercase();
+    if lower.ends_with(".flac") {
+        "audio/flac"
+    } else if lower.ends_with(".mp3") {
+        "audio/mpeg"
+    } else if lower.ends_with(".m4a") || lower.ends_with(".mp4") || lower.ends_with(".aac") {
+        "audio/mp4"
+    } else if lower.ends_with(".ogg") {
+        "audio/ogg"
+    } else if lower.ends_with(".wav") {
+        "audio/wav"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 async fn write_plain(sock: &mut TcpStream, code: u16, msg: &str) -> std::io::Result<()> {
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
@@ -235,4 +402,60 @@ async fn write_plain(sock: &mut TcpStream, code: u16, msg: &str) -> std::io::Res
         msg
     );
     sock.write_all(resp.as_bytes()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client() -> Arc<HttpClient> {
+        Arc::new(HttpClient::new(0, 4))
+    }
+
+    /// 本地文件（离线播放）要能整段读、也要能按 Range 读
+    #[tokio::test]
+    async fn serves_local_file_with_range() {
+        let proxy = StreamProxy::start(client()).await.expect("proxy 应该能启动");
+        let path = std::env::temp_dir().join(format!("tinymusic-proxy-test-{}.mp3", std::process::id()));
+        let bytes: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        tokio::fs::write(&path, &bytes).await.expect("写测试文件");
+
+        let url = proxy
+            .register_file(path.clone(), Some("audio/mpeg".into()))
+            .await;
+
+        let http = reqwest::Client::new();
+        let full = http.get(&url).send().await.expect("整段请求");
+        assert_eq!(full.status(), 200);
+        assert_eq!(full.headers()["content-type"], "audio/mpeg");
+        assert_eq!(full.headers()["accept-ranges"], "bytes");
+        let body = full.bytes().await.expect("读整段");
+        assert_eq!(body.len(), bytes.len());
+        assert_eq!(&body[..], &bytes[..]);
+
+        let part = http
+            .get(&url)
+            .header(reqwest::header::RANGE, "bytes=1000-1099")
+            .send()
+            .await
+            .expect("Range 请求");
+        assert_eq!(part.status(), 206);
+        assert_eq!(part.headers()["content-range"], "bytes 1000-1099/4096");
+        let piece = part.bytes().await.expect("读片段");
+        assert_eq!(piece.len(), 100);
+        assert_eq!(&piece[..], &bytes[1000..1100]);
+
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    /// 文件被删掉时明确返回 404，而不是挂住
+    #[tokio::test]
+    async fn missing_file_is_404() {
+        let proxy = StreamProxy::start(client()).await.expect("proxy 应该能启动");
+        let url = proxy
+            .register_file(std::env::temp_dir().join("tinymusic-not-here.mp3"), None)
+            .await;
+        let resp = reqwest::Client::new().get(&url).send().await.expect("请求");
+        assert_eq!(resp.status(), 404);
+    }
 }

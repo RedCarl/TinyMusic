@@ -306,6 +306,37 @@ impl Storage {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// 找一首歌已经下载完成的**本地**文件（离线播放用）。
+    ///
+    /// 网盘下载（`path` 是 `s3://`）不算：那种还得走签名直链。
+    /// 同一个曲目可能下载过多次（不同音质），取最近一条。
+    pub fn find_local_download(&self, provider: &str, id: &str) -> Result<Option<DownloadRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT task_id,provider,id,title,artist,path,quality,bytes,status,created_at
+             FROM downloads
+             WHERE provider=?1 AND id=?2 AND status='done' AND path NOT LIKE 's3://%'
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![provider, id])?;
+        let row = match rows.next()? {
+            Some(r) => DownloadRow {
+                task_id: r.get(0)?,
+                provider: r.get(1)?,
+                id: r.get(2)?,
+                title: r.get(3)?,
+                artist: r.get(4)?,
+                path: r.get(5)?,
+                quality: r.get(6)?,
+                bytes: r.get(7)?,
+                status: r.get(8)?,
+                created_at: r.get(9)?,
+            },
+            None => return Ok(None),
+        };
+        Ok(Some(row))
+    }
+
     // ---------- 会话 ----------
 
     pub fn save_session(&self, s: &Session) -> Result<()> {
@@ -486,6 +517,26 @@ mod tests {
             ],
             has_advanced: true,
         }
+    }
+
+    #[test]
+    fn finds_completed_local_download_only() {
+        let s = Storage::open_in_memory().unwrap();
+        let t = sample();
+        // 只有「本地 + 完成」的记录才算，网盘路径和失败记录都不算
+        s.insert_download("a", &t, crate::model::Quality::Super, "/tmp/x.mp3", 100, "running")
+            .unwrap();
+        assert!(s.find_local_download("kuwo", "123").unwrap().is_none());
+
+        s.update_download("a", "done", 100).unwrap();
+        let row = s.find_local_download("kuwo", "123").unwrap().expect("应该找到本地文件");
+        assert_eq!(row.path, "/tmp/x.mp3");
+        assert_eq!(row.quality, "super");
+
+        s.insert_download("b", &t, crate::model::Quality::Lossless, "s3://bucket/x.flac", 1, "done")
+            .unwrap();
+        let row = s.find_local_download("kuwo", "123").unwrap().expect("还是本地那条");
+        assert_eq!(row.path, "/tmp/x.mp3");
     }
 
     #[test]
