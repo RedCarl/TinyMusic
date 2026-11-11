@@ -32,6 +32,13 @@
   let scrubbing = $state(false);
   let scrubVal = $state(0);
 
+  // 封面加载失败时退回占位图标（网盘封面直链过期、CDN 防盗链都走这条）
+  let coverFailedFor = $state('');
+  const coverKey = $derived(
+    player.current ? `${player.current.provider}:${player.current.id}:${player.current.cover ?? ''}` : ''
+  );
+  const showCover = $derived(!!player.current?.cover && coverFailedFor !== coverKey);
+
   const pct = $derived(
     player.duration > 0
       ? Math.min(100, ((scrubbing ? scrubVal : player.progress) / player.duration) * 100)
@@ -278,8 +285,14 @@
       title={player.current ? '查看歌词' : '还没有播放中的歌曲'}
       aria-label="打开歌词页"
     >
-      {#if player.current?.cover}
-        <img src={player.current.cover} alt="" />
+      {#if showCover}
+        <img
+          src={player.current?.cover ?? ''}
+          alt=""
+          onerror={() => {
+            coverFailedFor = coverKey;
+          }}
+        />
       {:else}
         <span class="ph" aria-hidden="true">
           <HugeiconsIcon icon={icons.music} size={ICON_SIZE.control} />

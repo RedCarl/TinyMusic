@@ -246,6 +246,8 @@ function restorePlayback() {
     player.progress = progress;
     player.src = '';
     setStatus('paused');
+    // 上次播放的网盘曲目，封面直链可能已经过期
+    void refreshS3Cover(queue[index]);
   } catch {
     /* 记录损坏就当没有 */
   }
@@ -433,6 +435,49 @@ function markUnavailable(track: Track) {
   if (t) t.availability = 'unavailable';
 }
 
+/**
+ * 签名直链还剩多少秒过期；不是签名直链（普通 CDN 图片）返回 Infinity。
+ * 用来判断队列里这份封面还能不能直接用。
+ */
+function coverTtlSec(url: string | null | undefined): number {
+  if (!url) return -1;
+  if (!url.includes('X-Amz-Signature')) return Infinity;
+  const date = url.match(/X-Amz-Date=(\d{8}T\d{6}Z)/)?.[1];
+  const ttl = url.match(/X-Amz-Expires=(\d+)/)?.[1];
+  if (!date || !ttl) return Infinity;
+  const at = Date.UTC(
+    Number(date.slice(0, 4)),
+    Number(date.slice(4, 6)) - 1,
+    Number(date.slice(6, 8)),
+    Number(date.slice(9, 11)),
+    Number(date.slice(11, 13)),
+    Number(date.slice(13, 15))
+  );
+  return at / 1000 + Number(ttl) - Date.now() / 1000;
+}
+
+/**
+ * 网盘曲目的封面是后端签的临时直链（6 小时过期），队列里的对象可能来自
+ * 几小时前的列表；快过期/已过期就重签一次，避免播放条/歌词页显示裂图。
+ * 直链还有富余时不打扰网盘。
+ */
+async function refreshS3Cover(track: Track) {
+  if (track.provider !== 's3') return;
+  if (coverTtlSec(track.cover) > 300) return;
+  try {
+    const fresh = await api.s3Cover(track.id);
+    if (!player.current || !sameTrack(player.current, track)) return;
+    if (fresh) {
+      player.current.cover = fresh;
+    } else if (coverTtlSec(player.current.cover) <= 300) {
+      // 网盘里没有封面，留空让界面走占位图，别挂一张过期直链
+      player.current.cover = null;
+    }
+  } catch {
+    /* 网盘暂时不可用就沿用旧直链 */
+  }
+}
+
 /** 从队列第 i 首开始；fromSec > 0 用于恢复上次进度（等 metadata 后再 seek + play） */
 async function startAt(i: number, fromSec = 0) {
   const track = player.queue[i];
@@ -453,6 +498,7 @@ async function startAt(i: number, fromSec = 0) {
   persistPlayback(true);
   void loadLyrics(track);
   void refreshTrackQualities(track);
+  void refreshS3Cover(track);
 
   try {
     let src: PlayerSource;

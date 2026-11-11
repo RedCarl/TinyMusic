@@ -294,7 +294,12 @@ fn favorites_object_key(prefix: &str) -> String {
 /// 把本地喜欢列表写成网盘上的 favorites.json
 async fn push_favorites(state: &AppState) -> Result<(), String> {
     let client = s3_client(state)?;
-    let list = state.storage.list_favorites().map_err(|e| e.to_string())?;
+    let mut list = state.storage.list_favorites().map_err(|e| e.to_string())?;
+    // s3 曲目的封面是临时签名直链，写进 JSON 只会变成别的设备/几小时后的裂图；
+    // 拉取时按对象名重签（refresh_s3_covers），所以这里一律不落盘。
+    for t in list.iter_mut().filter(|t| t.provider == "s3") {
+        t.cover = None;
+    }
     let key = favorites_object_key(&client.config().prefix);
     let body = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
     client
@@ -870,7 +875,11 @@ async fn favorites_pull(state: State<'_, AppState>) -> Result<Vec<Track>, String
     if merged.len() > json_len {
         let _ = push_favorites(&state).await;
     }
-    state.storage.list_favorites().map_err(|e| e.to_string())
+
+    // 返回给前端之前重签封面，播放条/歌词页才不会加载到过期直链的裂图
+    let mut list = state.storage.list_favorites().map_err(|e| e.to_string())?;
+    refresh_s3_covers(&client, &mut list).await;
+    Ok(list)
 }
 
 #[tauri::command]
@@ -2101,6 +2110,53 @@ fn find_sibling(keys: &[(String, String)], stem: &str, exts: &[&str]) -> Option<
     None
 }
 
+/// 给网盘音频对象签一个封面直链：同目录同名 jpg/jpeg/png/webp。
+/// 封面是临时签名地址，所以只能现签现用，不能存进库或 favorites.json。
+async fn signed_cover_for(client: &S3, audio_key: &str) -> Option<String> {
+    let (folder, _) = audio_key.rsplit_once('/')?;
+    let keys = client.list_keys(&format!("{}/", folder)).await.ok()?;
+    let lower: Vec<(String, String)> = keys
+        .iter()
+        .map(|k| (k.to_lowercase(), k.clone()))
+        .collect();
+    let stem = audio_key.rsplit_once('.').map(|(a, _)| a).unwrap_or(audio_key);
+    find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"])
+        .and_then(|k| client.presign_get(&k, 6 * 3600).ok())
+}
+
+/// 批量刷新 s3 曲目的封面直链；同一个目录只列一次。
+///
+/// 库里/favorites.json 里存的 s3 封面都是写入那会儿签的直链，几个小时后就失效，
+/// 播放时播放条会直接显示裂图。所以每次把「喜欢」读出来都重签一次。
+async fn refresh_s3_covers(client: &S3, tracks: &mut [Track]) {
+    let mut cache: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new();
+    for t in tracks.iter_mut().filter(|t| t.provider == "s3") {
+        let key = t.id.clone();
+        let Some((folder, _)) = key.rsplit_once('/') else {
+            t.cover = None;
+            continue;
+        };
+        let entries = match cache.get(folder).cloned() {
+            Some(e) => e,
+            None => {
+                let entries: Vec<(String, String)> = client
+                    .list_keys(&format!("{}/", folder))
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|k| (k.to_lowercase(), k.clone()))
+                    .collect();
+                cache.insert(folder.to_string(), entries.clone());
+                entries
+            }
+        };
+        let stem = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
+        t.cover = find_sibling(&entries, stem, &["jpg", "jpeg", "png", "webp"])
+            .and_then(|k| client.presign_get(&k, 6 * 3600).ok());
+    }
+}
+
 /// 列出某个网盘歌单里的歌曲（音频 + 同名歌词/封面）。
 async fn list_s3_track_rows(client: &S3, name: &str) -> Result<Vec<S3TrackRow>, String> {
     let folder = playlist_prefix(&client.normalized_prefix(), name);
@@ -2221,6 +2277,16 @@ async fn s3_playlist_rename(
         .save_s3_playlist(&new)
         .map_err(|e| e.to_string())?;
     Ok(new)
+}
+
+/// 现签一个网盘曲目的封面直链。
+///
+/// 队列里的 s3 曲目可能来自几小时前的列表，内嵌的封面直链已经过期；
+/// 播放时重签一次，避免播放条/歌词页显示裂图。
+#[tauri::command]
+async fn s3_cover(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+    let client = s3_client(&state)?;
+    Ok(signed_cover_for(&client, &key).await)
 }
 
 /// 删除歌单里的单曲（音频 + 同名歌词/封面）
@@ -2768,6 +2834,7 @@ pub fn run() {
             s3_playlist_purge,
             s3_playlist_rename,
             s3_playlist_tracks,
+            s3_cover,
             s3_track_delete,
             s3_download,
             s3_download_batch,

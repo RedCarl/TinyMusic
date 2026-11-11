@@ -370,6 +370,8 @@ export const api = {
     invoke<string>('s3_playlist_rename', { old: oldName, new: newName }),
   s3PlaylistTracks: (name: string) => invoke<S3TrackRow[]>('s3_playlist_tracks', { name }),
   s3ReorderPlaylists: (names: string[]) => invoke<void>('s3_playlists_reorder', { names }),
+  /** 重新签一个网盘曲目的封面直链（签名地址会过期） */
+  s3Cover: (key: string) => invoke<string | null>('s3_cover', { key }),
   s3TrackDelete: (key: string) => invoke<void>('s3_track_delete', { key }),
   s3Download: (
     track: Track,

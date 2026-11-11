@@ -45,6 +45,13 @@
 
   const qualityText = $derived(player.actualLabel || qualityLabel(player.quality));
 
+  /** 封面直链失效（网盘签名过期、CDN 防盗链）时退回占位图 */
+  let coverFailedFor = $state('');
+  const coverKey = $derived(
+    player.current ? `${player.current.provider}:${player.current.id}:${player.current.cover ?? ''}` : ''
+  );
+  const showCover = $derived(!!player.current?.cover && coverFailedFor !== coverKey);
+
   function cancelAnim() {
     if (scrollAnim) cancelAnimationFrame(scrollAnim);
     scrollAnim = 0;
@@ -175,8 +182,15 @@
   transition:fly={{ y: REDUCE_MOTION ? 0 : '100%', duration: REDUCE_MOTION ? 0 : 320, opacity: 1 }}
 >
   <div class="lyrics-bg" aria-hidden="true">
-    {#if player.current?.cover}
-      <img class="lyrics-bg-img" src={coverUrl(player.current.cover, 900)} alt="" />
+    {#if showCover}
+      <img
+        class="lyrics-bg-img"
+        src={coverUrl(player.current?.cover, 900)}
+        alt=""
+        onerror={() => {
+          coverFailedFor = coverKey;
+        }}
+      />
     {/if}
   </div>
 
@@ -206,8 +220,15 @@
   <div class="lyrics-body">
     <div class="lp-side">
       <div class="lp-art">
-        {#if player.current?.cover}
-          <img class="lp-cover" src={coverUrl(player.current.cover, 800)} alt="" />
+        {#if showCover}
+          <img
+            class="lp-cover"
+            src={coverUrl(player.current?.cover, 800)}
+            alt=""
+            onerror={() => {
+              coverFailedFor = coverKey;
+            }}
+          />
         {:else}
           <div class="lp-cover ph" aria-hidden="true">
             <HugeiconsIcon icon={icons.music} size={ICON_SIZE.empty} />
