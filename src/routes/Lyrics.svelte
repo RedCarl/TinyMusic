@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
+  import MorphIcon from '../components/MorphIcon.svelte';
   import { coverUrl, fmtDuration, qualityLabel } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import {
@@ -259,10 +260,11 @@
         >
           {#if player.status === 'loading'}
             <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.control} /></span>
-          {:else if player.status === 'playing'}
-            <HugeiconsIcon icon={icons.pause} size={ICON_SIZE.control} />
           {:else}
-            <HugeiconsIcon icon={icons.play} size={ICON_SIZE.control} />
+            <MorphIcon
+              icon={player.status === 'playing' ? icons.pause : icons.play}
+              size={ICON_SIZE.control}
+            />
           {/if}
         </button>
         <button class="c" onclick={next} title="下一首" aria-label="下一首">

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
+  import MorphIcon from './MorphIcon.svelte';
   import { api, fmtDuration, isBlocked, type Track } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { playTrack, player, toggle, isCurrent } from '../lib/player.svelte';
@@ -118,10 +119,8 @@
   >
     {#if loading}
       <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
-    {:else if playing}
-      <HugeiconsIcon icon={icons.pause} size={ICON_SIZE.inline} />
     {:else}
-      <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
+      <MorphIcon icon={playing ? icons.pause : icons.play} size={ICON_SIZE.inline} />
     {/if}
   </button>
 

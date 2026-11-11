@@ -9,7 +9,6 @@
   import { playTrack } from '../lib/player.svelte';
   import { showToast } from '../lib/toast.svelte';
   import TrackRow from '../components/TrackRow.svelte';
-  import Icon from '../components/Icon.svelte';
   import TrackListSkeleton from '../components/TrackListSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
 
@@ -285,10 +284,13 @@
                     void playPlaylist(pl);
                   }}
                 >
-                  <Icon
-                    icon={fabBusy === `${pl.provider}:${pl.id}` ? icons.loading : icons.play}
-                    size={ICON_SIZE.control}
-                  />
+                  {#if fabBusy === `${pl.provider}:${pl.id}`}
+                    <span class="spin"
+                      ><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.control} /></span
+                    >
+                  {:else}
+                    <HugeiconsIcon icon={icons.play} size={ICON_SIZE.control} />
+                  {/if}
                 </button>
               </div>
               <div class="nm">{pl.name}</div>
@@ -358,10 +360,13 @@
                   void playPlaylist(pl);
                 }}
               >
-                <Icon
-                  icon={fabBusy === `${pl.provider}:${pl.id}` ? icons.loading : icons.play}
-                  size={ICON_SIZE.control}
-                />
+                {#if fabBusy === `${pl.provider}:${pl.id}`}
+                  <span class="spin"
+                    ><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.control} /></span
+                  >
+                {:else}
+                  <HugeiconsIcon icon={icons.play} size={ICON_SIZE.control} />
+                {/if}
               </button>
             </div>
             <div class="nm">{pl.name}</div>

@@ -9,7 +9,7 @@
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { player, playTrack, playNext, toggle } from '../lib/player.svelte';
   import CloudSkeleton from '../components/CloudSkeleton.svelte';
-  import Icon from '../components/Icon.svelte';
+  import MorphIcon from '../components/MorphIcon.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
 
   let lists = $state<S3PlaylistInfo[]>([]);
@@ -449,7 +449,10 @@
               aria-label={isPlaying(r.key) ? '暂停' : '播放'}
               onclick={() => playRow(i)}
             >
-              <Icon icon={isPlaying(r.key) ? icons.pause : icons.play} size={ICON_SIZE.inline} />
+              <MorphIcon
+                icon={isPlaying(r.key) ? icons.pause : icons.play}
+                size={ICON_SIZE.inline}
+              />
             </button>
             {#if canManage(current)}
               <button

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
+  import MorphIcon from './MorphIcon.svelte';
   import { fmtDuration, isBlocked } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import {
@@ -243,10 +244,8 @@
     >
       {#if player.status === 'loading'}
         <span class="spin"><HugeiconsIcon icon={icons.loading} size={22} /></span>
-      {:else if player.status === 'playing'}
-        <HugeiconsIcon icon={icons.pause} size={22} />
       {:else}
-        <HugeiconsIcon icon={icons.play} size={22} />
+        <MorphIcon icon={player.status === 'playing' ? icons.pause : icons.play} size={22} />
       {/if}
     </button>
 
@@ -268,12 +267,7 @@
       aria-label={`循环方式：${repeatLabel}`}
       aria-pressed={player.repeat !== 'off'}
     >
-      {#key player.repeat}
-        <HugeiconsIcon
-          icon={player.repeat === 'one' ? icons.repeatOne : icons.repeat}
-          size={16}
-        />
-      {/key}
+      <MorphIcon icon={player.repeat === 'one' ? icons.repeatOne : icons.repeat} size={16} />
     </button>
   </div>
 
@@ -402,9 +396,7 @@
         aria-label={volumeLabel}
         aria-expanded={player.volumeOpen}
       >
-        {#key volumeIcon}
-          <HugeiconsIcon icon={volumeIcon} size={ICON_SIZE.control} />
-        {/key}
+        <MorphIcon icon={volumeIcon} size={ICON_SIZE.control} />
       </button>
     </div>
   </div>
