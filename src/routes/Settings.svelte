@@ -7,12 +7,12 @@
   import { setPreferredQuality } from '../lib/player.svelte';
   import { theme, setTheme, type ThemeMode } from '../lib/theme.svelte';
   import { getVersion } from '@tauri-apps/api/app';
-  import { check, type Update } from '@tauri-apps/plugin-updater';
+  import { check } from '@tauri-apps/plugin-updater';
   import ProgressBar from '../components/ProgressBar.svelte';
   import { relaunch } from '@tauri-apps/plugin-process';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { slide } from 'svelte/transition';
-  import { clearUpdateBadge, updateState } from '../lib/update.svelte';
+  import { pendingUpdate, setPendingUpdate, updateState } from '../lib/update.svelte';
 
   /** 关掉动画就别展开收起，直接跳 */
   const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -22,8 +22,10 @@
   let updMsg = $state('');
   let updErr = $state('');
   let updBusy = $state(false);
-  let pending = $state<Update | null>(null);
   let progress = $state(0);
+
+  /** 后台检查已经找到新版时这里直接拿得到句柄，不用再点一次「检查更新」 */
+  const pending = $derived(updateState.version ? pendingUpdate() : null);
 
   $effect(() => {
     getVersion().then((v) => (appVersion = v)).catch(() => {});
@@ -33,17 +35,10 @@
     updBusy = true;
     updErr = '';
     updMsg = '';
-    pending = null;
     try {
       const u = await check();
-      if (u) {
-        pending = u;
-        updMsg = `发现新版本 ${u.version}`;
-        updateState.version = u.version;
-      } else {
-        updMsg = '已经是最新版本';
-        clearUpdateBadge();
-      }
+      setPendingUpdate(u ?? null);
+      updMsg = u ? `发现新版本 ${u.version}` : '已经是最新版本';
     } catch (e) {
       updErr = `检查失败：${e}`;
     } finally {
@@ -52,14 +47,15 @@
   }
 
   async function doUpdate() {
-    if (!pending) return;
+    const u = pending;
+    if (!u) return;
     updBusy = true;
     updErr = '';
     progress = 0;
     let total = 0;
     let got = 0;
     try {
-      await pending.downloadAndInstall((ev) => {
+      await u.downloadAndInstall((ev) => {
         if (ev.event === 'Started') {
           total = ev.data.contentLength ?? 0;
         } else if (ev.event === 'Progress') {
@@ -446,11 +442,16 @@
       <div class="st-row">
         <div class="st-label">当前版本</div>
         <span class="st-value">v{appVersion || '—'}</span>
+        {#if pending}<span class="st-value new">可更新到 v{pending.version}</span>{/if}
       </div>
       <div class="st-row">
         <div class="st-label">
           软件更新
-          {#if updMsg}<span class="st-desc">{updMsg}</span>{/if}
+          {#if pending}
+            <span class="st-desc">发现新版本 v{pending.version}，装完会自动重启</span>
+          {:else if updMsg}
+            <span class="st-desc">{updMsg}</span>
+          {/if}
         </div>
         <div class="st-control">
           {#if pending}
@@ -555,6 +556,11 @@
     flex: none;
     color: var(--fg2);
     font-size: 12px;
+  }
+
+  /* 当前版本右边挂一句「可更新到 vX」，琥珀色，和列表里的无损标记同一种语气 */
+  .st-value.new {
+    color: var(--warn);
   }
 
   .st-control {
