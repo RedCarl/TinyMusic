@@ -2,7 +2,7 @@
   import { fly } from 'svelte/transition';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import MorphIcon from './MorphIcon.svelte';
-  import { fmtDuration, isBlocked } from '../lib/api';
+  import { coverUrl, fmtDuration, isBlocked } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import {
     player,
@@ -293,7 +293,7 @@
     >
       {#if showCover}
         <img
-          src={player.current?.cover ?? ''}
+          src={coverUrl(player.current?.cover, 500)}
           alt=""
           onerror={() => {
             coverFailedFor = coverKey;

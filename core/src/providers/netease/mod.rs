@@ -34,12 +34,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// 网易云图片统一缩放：`?param=WxH`
+///
+/// 接口里的 `picUrl` / `coverImgUrl` 大量还是 `http://`（每日推荐、我的歌单尤其明显），
+/// 而应用页面跑在 Tauri 的自定义协议上，WebView 会把这种图片当混合内容拦掉 ——
+/// 表现就是一张都加载不出来。这里统一升到 https：`p*.music.126.net` 两种都支持。
 pub fn cover_url(raw: &str, size: u32) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
     }
     let base = raw.split('?').next().unwrap_or(raw);
+    let base = match base.strip_prefix("http://") {
+        Some(rest) => format!("https://{}", rest),
+        None => base.to_string(),
+    };
     Some(format!("{}?param={}y{}", base, size, size))
 }
 
@@ -1128,5 +1136,32 @@ impl NeteaseProvider {
     /// 「网易云自己给不给」和「桥接有没有救回来」。
     pub async fn resolve_direct(&self, track: &Track, q: Quality) -> Result<StreamInfo> {
         self.netease_stream(track, q).await
+    }
+}
+
+#[cfg(test)]
+mod cover_tests {
+    use super::cover_url;
+
+    /// 接口给 http 时必须升到 https，否则 WebView 当混合内容拦掉（一张图都不显示）
+    #[test]
+    fn upgrades_http_to_https() {
+        let u = cover_url("http://p1.music.126.net/bhA-CKyrEnMG8uYVtHquHg==/109951172798206512.jpg", 300)
+            .expect("非空地址应该能生成封面");
+        assert_eq!(
+            u,
+            "https://p1.music.126.net/bhA-CKyrEnMG8uYVtHquHg==/109951172798206512.jpg?param=300y300"
+        );
+    }
+
+    #[test]
+    fn keeps_https_and_replaces_query() {
+        let u = cover_url("https://p2.music.126.net/a.jpg?param=200y200", 400).unwrap();
+        assert_eq!(u, "https://p2.music.126.net/a.jpg?param=400y400");
+    }
+
+    #[test]
+    fn empty_is_none() {
+        assert!(cover_url("  ", 300).is_none());
     }
 }

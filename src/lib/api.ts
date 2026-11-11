@@ -496,8 +496,11 @@ export function parsePlaylistId(input: string): string | null {
  */
 export function coverUrl(url: string | null | undefined, size = 500): string {
   if (!url) return '';
-  if (!/kuwo\.cn/i.test(url)) return url;
-  return url.replace(/\/(\d{2,4})\//, `/${size}/`);
+  // 网易云的 p*.music.126.net 经常给 http，WebView 会把这种图片当混合内容拦掉
+  // （每日推荐、我的歌单尤其明显），这里统一升到 https。
+  const safe = url.replace(/^http:\/\/([a-z0-9-]+\.music\.126\.net)/i, 'https://$1');
+  if (!/kuwo\.cn/i.test(safe)) return safe;
+  return safe.replace(/\/(\d{2,4})\//, `/${size}/`);
 }
 
 export function fmtCount(n: number): string {
