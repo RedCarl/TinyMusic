@@ -15,7 +15,10 @@ import { setNetease } from './account.svelte';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 打开登录窗口并等待会话；默认最多等 5 分钟 */
+/**
+ * 登录只有一个入口：点「登录」→ 打开网页登录窗口 → 等后端会话出现。
+ * 不再提供粘贴 cookie 的方式，界面保持和酷我一致。
+ */
 export async function loginNetease(timeoutMs = 300_000): Promise<Session> {
   await api.neteaseLoginOpen();
   const deadline = Date.now() + timeoutMs;
@@ -28,18 +31,6 @@ export async function loginNetease(timeoutMs = 300_000): Promise<Session> {
     }
   }
   throw new Error('登录超时：窗口已关闭或未完成登录');
-}
-
-/**
- * 粘贴 cookie 登录（逃生通道）。
- *
- * 从浏览器 DevTools → Application → Cookies → music.163.com 复制
- * `MUSIC_U=...`（整行，或 `k=v; k2=v2` 形式）。
- */
-export async function loginNeteaseCookie(cookie: string): Promise<Session> {
-  const s = await api.login('netease', 'cookie', { cookie });
-  setNetease({ uid: s.user_id, nickname: s.nickname, avatar: s.avatar });
-  return s;
 }
 
 /** 从后端兑现当前会话，用于刷新页面后校正本地展示缓存 */

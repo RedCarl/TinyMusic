@@ -3,12 +3,12 @@
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
-  import { account, setUid, setNetease, clearNetease } from '../lib/account.svelte';
+  import { account, setUid, clearNetease } from '../lib/account.svelte';
   import { go, router } from '../lib/router.svelte';
   import { showToast } from '../lib/toast.svelte';
-  import { loginNetease, loginNeteaseCookie, syncNeteaseSession } from '../lib/neteaseLogin';
+  import { loginNetease, syncNeteaseSession } from '../lib/neteaseLogin';
 
-  // 平台列表：酷我用网页登录，网易云用网页登录 + cookie 逃生通道
+  // 平台列表：所有平台都是一个「登录」按钮，点了各自打开网页登录窗口
   const PLATFORMS = [
     {
       id: 'kuwo',
@@ -91,9 +91,6 @@
   // ---------- 网易云 ----------
   let neBusy = $state(false);
   let neErr = $state('');
-  let neOpen = $state(false);
-  let neCookie = $state('');
-  let neCodeBusy = $state(false);
 
   async function neteaseLogin() {
     if (neBusy) return;
@@ -102,28 +99,10 @@
     try {
       const s = await loginNetease();
       showToast(`已登录网易云：${s.nickname || s.user_id}`);
-      neOpen = false;
     } catch (e) {
       neErr = String(e);
     } finally {
       neBusy = false;
-    }
-  }
-
-  async function neteaseCookieLogin() {
-    const raw = neCookie.trim();
-    if (!raw || neCodeBusy) return;
-    neCodeBusy = true;
-    neErr = '';
-    try {
-      const s = await loginNeteaseCookie(raw);
-      showToast(`已登录网易云：${s.nickname || s.user_id}`);
-      neCookie = '';
-      neOpen = false;
-    } catch (e) {
-      neErr = String(e);
-    } finally {
-      neCodeBusy = false;
     }
   }
 
@@ -230,11 +209,8 @@
             <span class="spin"><HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} /></span>
             等待登录…
           {:else}
-            网页登录
+            登录
           {/if}
-        </button>
-        <button class="mini" onclick={(e) => { e.stopPropagation(); neOpen = !neOpen; }}>
-          {neOpen ? '收起' : 'cookie'}
         </button>
       {/if}
     </div>
@@ -242,32 +218,6 @@
 
   {#if neErr}
     <div class="err">{neErr}</div>
-  {/if}
-
-  {#if neOpen && !account.netease.uid}
-    <div class="note">
-      <strong>用 cookie 登录（逃生通道）</strong>
-      <p>
-        浏览器打开 music.163.com 并登录 → DevTools → Application → Cookies →
-        <code>https://music.163.com</code> → 复制 <code>MUSIC_U</code> 的值，
-        或直接粘贴整行 <code>MUSIC_U=...; __csrf=...</code>。
-      </p>
-      <textarea
-        bind:value={neCookie}
-        rows="3"
-        placeholder="MUSIC_U=xxxx; __csrf=yyyy"
-        spellcheck="false"
-      ></textarea>
-      <p>
-        <button class="mini primary" onclick={neteaseCookieLogin} disabled={neCodeBusy || !neCookie.trim()}>
-          {neCodeBusy ? '校验中…' : '用 cookie 登录'}
-        </button>
-      </p>
-      <p class="note tip">
-        cookie 只存在本机数据库，用于读取你的歌单/每日推荐；播放时优先用官方直链，
-        取不到再按「标题 + 歌手 + 时长」到酷我匹配同一首歌。
-      </p>
-    </div>
   {/if}
 </div>
 

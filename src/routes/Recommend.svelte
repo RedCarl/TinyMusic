@@ -181,8 +181,7 @@
       </div>
       <p>登录网易云后可以看到每日推荐与推荐歌单</p>
       <div class="chips">
-        <button onclick={login} disabled={busy}>{busy ? '等待登录…' : '网页登录网易云'}</button>
-        <button onclick={() => go({ name: 'account' })}>用 cookie 登录</button>
+        <button onclick={login} disabled={busy}>{busy ? '等待登录…' : '登录'}</button>
       </div>
     </div>
   {:else if skel.visible}
