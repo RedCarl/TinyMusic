@@ -46,6 +46,18 @@
       : 0
   );
 
+  /** 播放条上标注这段声音的真实来源：本地文件 / 网盘 / 网易 / 酷我 */
+  const sourceBadge = $derived.by(() => {
+    const via = player.via;
+    const provider = player.current?.provider ?? '';
+    if (via === 'local') return '本地';
+    if (via === 's3' || provider === 's3') return '网盘';
+    if (via.startsWith('kuwo-bridge')) return '酷我';
+    if (provider === 'netease') return '网易';
+    if (provider === 'kuwo') return '酷我';
+    return '';
+  });
+
   const repeatLabel = $derived(
     player.repeat === 'one' ? '单曲循环' : player.repeat === 'all' ? '列表循环' : '不循环'
   );
@@ -296,6 +308,7 @@
 
     <div class="meta">
       <div class="t">
+        {#if player.current && sourceBadge}<span class="srcchip">{sourceBadge}</span>{/if}
         {player.current?.title ?? '未在播放'}
         {#if player.actualLabel}
           <span class="qchip" class:degraded={player.degraded}>{player.actualLabel}</span>

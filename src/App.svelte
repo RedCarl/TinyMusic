@@ -22,6 +22,7 @@
     persistPlayback,
     consumePendingSeek,
     clearPendingSeek,
+    recoverSource,
   } from './lib/player.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
   import TitleBar from './components/TitleBar.svelte';
@@ -103,6 +104,11 @@
     const name = (err as DOMException)?.name;
     if (name === 'NotSupportedError' && (await fallbackFromLossless())) {
       showToast('当前系统不支持 FLAC，已切到 320k');
+      player.error = '';
+      return;
+    }
+    // 直链过期也会以 NotSupportedError / 空源的形式冒出来，先换一条新直链试一次
+    if (await recoverSource()) {
       player.error = '';
       return;
     }
@@ -395,9 +401,15 @@
     }}
     onerror={() => {
       clearPendingSeek();
-      if (player.src) player.error = '音频加载失败（直链可能已过期）';
-      player.status = 'error';
-      player.playing = false;
+      // 挂掉的直链（缓存里的旧地址、代理 token 过期）先自动换一条再续播，
+      // 只有重试过了还失败才把错误摆到播放条上。
+      void recoverSource().then((retried) => {
+        if (retried) return;
+        const what = player.current?.provider === 's3' ? '网盘文件可能已被删除或直链过期' : '直链可能已过期';
+        if (player.src) player.error = `音频加载失败（${what}）`;
+        player.status = 'error';
+        player.playing = false;
+      });
     }}
     onplay={() => syncPlayback('playing')}
     onpause={(e) => {

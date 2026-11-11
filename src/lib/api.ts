@@ -256,8 +256,8 @@ export const api = {
   album: (provider: string, album_id: string, name: string, page = 0) =>
     invoke<AlbumPage>('album', { provider, albumId: album_id, name, page }),
 
-  playerOpen: (track: Track, quality: Quality, forceRefresh = false) =>
-    invoke<PlayerSource>('player_open', { track, quality, forceRefresh }),
+  playerOpen: (track: Track, quality: Quality, forceRefresh = false, allowLocal = true) =>
+    invoke<PlayerSource>('player_open', { track, quality, forceRefresh, allowLocal }),
 
   downloadStart: (track: Track, quality: Quality, onProgress: (p: Progress) => void) => {
     const ch = new Channel<Progress>();

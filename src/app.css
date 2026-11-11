@@ -2443,6 +2443,21 @@ button.primary {
 }
 
 /* 播放器里的实际音质小徽标 */
+/* 播放条上的音源标识：本地 / 网盘 / 网易 / 酷我 —— 比音质 chip 更轻，不抢歌名 */
+.srcchip {
+  margin-right: 7px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background-color: oklch(1 0 0 / 10%);
+  box-shadow: inset 0 0 0 1px oklch(1 0 0 / 12%);
+  color: var(--bar-ink);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+  opacity: 0.82;
+}
+
 .qchip {
   margin-left: 7px;
   padding: 1px 5px;

@@ -62,6 +62,8 @@ export const player = $state({
   actualQuality: 'standard' as Quality | 'original',
   actualFormat: null as AudioFormat | null,
   actualLabel: '',
+  /** 实际音源：local（本地文件）/ s3（网盘）/ kuwo / netease / kuwo-bridge */
+  via: '',
   degraded: false,
   /** 全局六档能力（后三档当前不可用） */
   capabilities: [] as QualityCapability[],
@@ -113,6 +115,7 @@ export async function loadQualityCapabilities() {
 
 function applySource(src: PlayerSource) {
   player.src = src.url;
+  player.via = src.via;
   player.actualQuality = src.quality === 'original' ? 'original' : (src.quality as Quality);
   player.actualFormat = src.format;
   const actual = formatLabel(src.format) || qualityLabel(src.quality);
@@ -478,10 +481,17 @@ async function refreshS3Cover(track: Track) {
   }
 }
 
-/** 从队列第 i 首开始；fromSec > 0 用于恢复上次进度（等 metadata 后再 seek + play） */
-async function startAt(i: number, fromSec = 0) {
+/** 直链失效后重试时记住是哪首，同一首只自动重试一次 */
+let recoveredKey = '';
+
+/**
+ * 从队列第 i 首开始；fromSec > 0 用于恢复上次进度（等 metadata 后再 seek + play）。
+ * `force` 跳过 resolve 缓存，`retry` 表示这是「直链过期后的一次自动重试」。
+ */
+async function startAt(i: number, fromSec = 0, force = false, retry = false) {
   const track = player.queue[i];
   if (!track) return;
+  if (!retry) recoveredKey = '';
   const token = ++playToken;
   const resume = fromSec > 0;
   player.index = i;
@@ -491,6 +501,7 @@ async function startAt(i: number, fromSec = 0) {
   player.duration = track.duration_sec || 0;
   player.src = '';
   player.actualLabel = '';
+  player.via = '';
   player.actualFormat = null;
   player.degraded = false;
   player.qualities = null;
@@ -502,11 +513,13 @@ async function startAt(i: number, fromSec = 0) {
 
   try {
     let src: PlayerSource;
+    // 重试时不再优先本地文件：上一次就是它坏了才走到这里的
+    const allowLocal = !retry;
     try {
-      src = await api.playerOpen(track, player.quality, false);
+      src = await api.playerOpen(track, player.quality, force, allowLocal);
     } catch {
       // 直链可能是缓存里的过期地址，强制刷新一次
-      src = await api.playerOpen(track, player.quality, true);
+      src = await api.playerOpen(track, player.quality, true, allowLocal);
     }
     if (token !== playToken) return; // 已经被更新的点击顶替
     applySource(src);
@@ -532,6 +545,20 @@ async function startAt(i: number, fromSec = 0) {
     setStatus('error');
     markUnavailable(track);
   }
+}
+
+/**
+ * 音频元素报错时的兜底：丢掉旧直链，换一条新的，从当前进度继续。
+ * 同一首只自动重试一次，第二次失败就把错误如实显示出来。
+ */
+export async function recoverSource(): Promise<boolean> {
+  const track = player.current;
+  if (!track) return false;
+  const key = `${track.provider}:${track.id}`;
+  if (recoveredKey === key) return false;
+  recoveredKey = key;
+  await startAt(player.index >= 0 ? player.index : 0, player.progress, true, true);
+  return true;
 }
 
 export async function playTrack(track: Track, queue?: Track[]) {
@@ -570,8 +597,9 @@ export function toggle() {
     return;
   }
   if (!player.src) {
-    // 出错后重试、或恢复了上次记录还没取流：从当前进度继续
-    void startAt(player.index >= 0 ? player.index : 0, player.progress);
+    // 出错后重试、或恢复了上次记录还没取流：从当前进度继续。
+    // 这里强制跳过缓存 —— 上次登录时的直链多半已经过期了。
+    void startAt(player.index >= 0 ? player.index : 0, player.progress, true);
     return;
   }
   if (player.status === 'ended') {
