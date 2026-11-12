@@ -11,6 +11,7 @@
   import CloudSkeleton from '../components/CloudSkeleton.svelte';
   import MorphIcon from '../components/MorphIcon.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
+  import { openIntegrity } from '../lib/s3Integrity.svelte';
 
   let lists = $state<S3PlaylistInfo[]>([]);
   let rows = $state<S3TrackRow[]>([]);
@@ -139,6 +140,12 @@
   }
 
   const isPlaying = (key: string) => player.current?.id === key && player.status === 'playing';
+
+  const PART_LABEL: Record<string, string> = { lyrics: '歌词', cover: '封面', audio: '音频' };
+  function partsText(list: string[]): string {
+    return list.map((p) => PART_LABEL[p] ?? p).join('、');
+  }
+  const missingCount = $derived(rows.filter((r) => (r.missing?.length ?? 0) > 0).length);
 
   function canManage(name: string) {
     return name !== FAVORITES;
@@ -284,6 +291,15 @@
     <div class="cloud-top">
       <h1>网盘</h1>
       <div class="cloud-top-actions">
+        <button
+          class="icon-btn"
+          title="检查完整性"
+          aria-label="检查网盘完整性"
+          onclick={() => openIntegrity('')}
+          disabled={!appCfg.s3Enabled}
+        >
+          <HugeiconsIcon icon={icons.shield} size={ICON_SIZE.inline} />
+        </button>
         <button class="icon-btn" title="刷新" aria-label="刷新" onclick={loadList} disabled={loading}>
           <HugeiconsIcon icon={icons.refresh} size={ICON_SIZE.inline} />
         </button>
@@ -396,7 +412,24 @@
       </button>
       <h1>{current}</h1>
       <span class="muted">{rows.length} 首</span>
+      {#if missingCount > 0}
+        <button
+          class="mini warn"
+          title="这些歌缺歌词或封面，点开可以补齐"
+          onclick={() => openIntegrity(current!)}
+        >
+          {missingCount} 首缺内容
+        </button>
+      {/if}
       <div class="cloud-top-actions">
+        <button
+          class="mini btn-ico"
+          onclick={() => openIntegrity(current!)}
+          title="检查这个歌单里缺音频 / 歌词 / 封面的歌"
+        >
+          <HugeiconsIcon icon={icons.shield} size={ICON_SIZE.inline} />
+          检查完整性
+        </button>
         <button class="primary btn-ico" onclick={playAll} disabled={!rows.length}>
           <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
           播放全部
@@ -440,6 +473,11 @@
                 {r.track.title || '未命名'}
                 {#if r.track.available_qualities?.includes('lossless')}
                   <span class="badge sq">无损</span>
+                {/if}
+                {#if r.missing?.length}
+                  <span class="badge warn" title={`缺${partsText(r.missing)}`}>
+                    缺{partsText(r.missing)}
+                  </span>
                 {/if}
               </span>
               <span class="s3sub">{r.track.artist || '未知歌手'}</span>

@@ -86,6 +86,7 @@ impl Endpoint {
     }
 }
 
+#[derive(Clone)]
 pub struct S3 {
     cfg: S3Config,
     http: reqwest::Client,
@@ -188,8 +189,34 @@ impl S3 {
         Ok(Some(resp.bytes().await?.to_vec()))
     }
 
-    /// 列出前缀下的对象 key（最多 1000 个）
+    /// 列出前缀下的对象 key（最多 1000 个，单页上限）
     pub async fn list_keys(&self, prefix: &str) -> Result<Vec<String>> {
+        Ok(self.list_keys_page(prefix, None).await?.0)
+    }
+
+    /// 列出前缀下的**全部**对象 key：自动翻页。
+    ///
+    /// 完整性检测要看到整个库，单页 1000 个不够。
+    pub async fn list_keys_all(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let mut token: Option<String> = None;
+        // 上限只是防服务端返回异常 token 时死循环：1000 页 = 100 万对象
+        for _ in 0..1_000 {
+            let (keys, next) = self.list_keys_page(prefix, token.as_deref()).await?;
+            out.extend(keys);
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    async fn list_keys_page(
+        &self,
+        prefix: &str,
+        token: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>)> {
         let (url, raw_path) = self.object_path("")?;
         let base = url.trim_end_matches('/');
         // 列表请求打的是「桶根」，路径末尾不能带 /，否则规范请求与实际请求对不上签名
@@ -201,9 +228,15 @@ impl S3 {
                 p.to_string()
             }
         };
-        let mut query: Vec<(&str, &str)> = vec![("list-type", "2"), ("max-keys", "1000")];
+        let mut query: Vec<(&str, String)> = vec![
+            ("list-type", "2".to_string()),
+            ("max-keys", "1000".to_string()),
+        ];
         if !prefix.is_empty() {
-            query.push(("prefix", prefix));
+            query.push(("prefix", prefix.to_string()));
+        }
+        if let Some(t) = token {
+            query.push(("continuation-token", t.to_string()));
         }
         query.sort_by(|a, b| a.0.cmp(b.0));
         // 注意：查询串里的 `/` 必须编码成 %2F。路径里的 `/` 才需要保留 ——
@@ -233,7 +266,15 @@ impl S3 {
             return Err(Error::Http(format!("S3 列表失败（HTTP {}）：{}", status, brief)));
         }
         let body = resp.text().await?;
-        Ok(parse_keys(&body))
+        let truncated = extract_tag(&body, "IsTruncated")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let next = if truncated {
+            extract_tag(&body, "NextContinuationToken")
+        } else {
+            None
+        };
+        Ok((parse_keys(&body), next))
     }
 
     /// 连通性测试：能列出对象就算通过
@@ -519,6 +560,15 @@ fn parse_keys(xml: &str) -> Vec<String> {
     out
 }
 
+/// 从 XML 里取一个标签的文本值（用于 IsTruncated / NextContinuationToken）
+fn extract_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    Some(xml_unescape(&xml[start..end]))
+}
+
 fn xml_unescape(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -551,6 +601,18 @@ mod tests {
         let stamp = format!("{:04}{:02}{:02}", y, m, d);
         assert_eq!(stamp, "20231114");
         assert_eq!((rem / 3600, (rem % 3600) / 60, rem % 60), (22, 13, 20));
+    }
+
+    #[test]
+    fn parses_truncation_and_token() {
+        let xml = r#"<ListBucketResult><IsTruncated>true</IsTruncated>
+<NextContinuationToken>1ueGcxLPRx/abc+def=</NextContinuationToken></ListBucketResult>"#;
+        assert_eq!(extract_tag(xml, "IsTruncated").as_deref(), Some("true"));
+        assert_eq!(
+            extract_tag(xml, "NextContinuationToken").as_deref(),
+            Some("1ueGcxLPRx/abc+def=")
+        );
+        assert_eq!(extract_tag(xml, "Nope"), None);
     }
 
     #[test]

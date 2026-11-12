@@ -54,6 +54,8 @@ import {
   FireIcon,
   MoreHorizontalIcon,
   HeadphonesIcon,
+  PreferenceVerticalIcon,
+  ShieldCheckIcon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
@@ -104,6 +106,10 @@ export const icons = {
   hot: FireIcon,
   more: MoreHorizontalIcon,
   quality: HeadphonesIcon,
+  /** 均衡器：三根竖向推子，和音量 / 播放列表区分得开 */
+  equalizer: PreferenceVerticalIcon,
+  /** 网盘完整性检测 */
+  shield: ShieldCheckIcon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */

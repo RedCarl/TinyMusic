@@ -129,6 +129,57 @@ export interface DownloadRow {
   created_at: number;
 }
 
+/** 网盘完整性检测结果：一首歌缺了哪些部分 */
+export interface S3IntegrityIssue {
+  /** 稳定 id：歌单 + 文件主干 */
+  id: string;
+  /** 歌单名（prefix 下的目录） */
+  playlist: string;
+  /** 音频 key 去掉扩展名后的路径 */
+  stem: string;
+  /** 现存音频 key；音频缺失时为空 */
+  key: string;
+  title: string;
+  artist: string;
+  /** audio / lyrics / cover */
+  missing: FailedPartName[];
+  /** 能补齐的来源平台（kuwo / netease），空表示找不到来源 */
+  source: string;
+  can_fix: boolean;
+}
+
+export interface S3IntegrityReport {
+  checked: number;
+  issues: S3IntegrityIssue[];
+}
+
+/** 下载里失败的一个部分 */
+export type FailedPartName = 'audio' | 'lyrics' | 'cover' | (string & {});
+
+export interface FailedPart {
+  part: FailedPartName;
+  /** 最后一次尝试的错误，给用户看原因用 */
+  error: string;
+}
+
+/**
+ * 一条「下载不完整」记录（音频 / 歌词 / 封面里哪部分失败）。
+ * 自动重试 5 次后仍失败才会出现；手动重试成功后后端会删掉这条。
+ */
+export interface FailedDownload {
+  id: string;
+  track: Track;
+  quality: Quality;
+  /** local：下载到本地；s3：上传到网盘 */
+  target: 'local' | 's3' | (string & {});
+  /** 网盘歌单名（本地下载为空） */
+  playlist: string;
+  /** 本地文件路径或网盘对象 key；音频都没下成功时为空 */
+  location: string;
+  parts: FailedPart[];
+  created_at: number;
+}
+
 export interface Settings {
   download_dir: string;
   default_quality: Quality;
@@ -165,6 +216,8 @@ export interface S3PlaylistInfo {
 export interface S3TrackRow {
   key: string;
   track: Track;
+  /** 列表里顺手标出的缺失项：lyrics / cover */
+  missing?: string[];
 }
 
 export interface S3ImportResult {
@@ -267,6 +320,15 @@ export const api = {
 
   downloads: () => invoke<DownloadRow[]>('download_list'),
   downloadClear: () => invoke<void>('download_clear'),
+
+  // ---- 下载失败记录 / 手动重试 ----
+  downloadFailures: () => invoke<FailedDownload[]>('download_failures'),
+  /** 只补失败的部分；返回重试后仍然失败的记录 */
+  downloadRetryFailed: (ids: string[]) =>
+    invoke<FailedDownload[]>('download_retry_failed', { ids }),
+  downloadFailureDismiss: (id: string) =>
+    invoke<void>('download_failure_dismiss', { id }),
+  downloadFailuresClear: () => invoke<void>('download_failures_clear'),
 
   favoriteAdd: (track: Track) => invoke<void>('favorite_add', { track }),
   favoriteRemove: (provider: string, id: string) =>
@@ -372,6 +434,25 @@ export const api = {
   s3ReorderPlaylists: (names: string[]) => invoke<void>('s3_playlists_reorder', { names }),
   /** 重新签一个网盘曲目的封面直链（签名地址会过期） */
   s3Cover: (key: string) => invoke<string | null>('s3_cover', { key }),
+
+  // ---- 网盘完整性检测 ----
+  /** 检查整库（playlist 为空）或某个歌单里缺音频 / 歌词 / 封面的条目 */
+  s3IntegrityCheck: (playlist?: string | null) =>
+    invoke<S3IntegrityReport>('s3_integrity_check', { playlist: playlist || null }),
+  /** 补齐选中的条目，返回补齐后重新扫描的结果 */
+  s3IntegrityFix: (
+    playlist: string | null,
+    ids: string[],
+    onProgress: (p: Progress) => void
+  ) => {
+    const ch = new Channel<Progress>();
+    ch.onmessage = onProgress;
+    return invoke<S3IntegrityReport>('s3_integrity_fix', {
+      playlist,
+      ids,
+      onProgress: ch,
+    });
+  },
   s3TrackDelete: (key: string) => invoke<void>('s3_track_delete', { key }),
   s3Download: (
     track: Track,

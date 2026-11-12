@@ -62,7 +62,9 @@
       <div class="modal-head">
         <div>
           <h2>下载 {count} 首歌曲</h2>
-          <p class="hint">音频内嵌封面标签，歌词保存为同名 .lrc 文件</p>
+          <p class="hint">
+            音频内嵌封面标签，歌词保存为同名 .lrc 文件；音频 / 歌词 / 封面失败会自动重试 5 次
+          </p>
         </div>
         <button class="icon" onclick={close} aria-label="关闭" disabled={downloadUi.busy}>
           <HugeiconsIcon icon={icons.close} size={ICON_SIZE.inline} />

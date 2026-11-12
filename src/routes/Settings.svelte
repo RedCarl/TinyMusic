@@ -13,6 +13,14 @@
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { slide } from 'svelte/transition';
   import { pendingUpdate, setPendingUpdate, updateState } from '../lib/update.svelte';
+  import {
+    EQ_PRESETS,
+    currentPresetName,
+    equalizer,
+    openEqualizer,
+    setEqualizerEnabled
+  } from '../lib/equalizer.svelte';
+  import { showToast } from '../lib/toast.svelte';
 
   /** 关掉动画就别展开收起，直接跳 */
   const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -218,6 +226,41 @@
             </button>
           {/each}
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="st-section">
+    <div class="st-section-title">音效</div>
+    <div class="st-card">
+      <div class="st-row">
+        <div class="st-label">
+          均衡器
+          <span class="st-desc">
+            {#if equalizer.enabled}
+              已开启 · 当前预设：{currentPresetName()} · 10 段图形均衡
+            {:else}
+              已关闭 · 10 段图形均衡，内置 {EQ_PRESETS.length} 种预设
+            {/if}
+          </span>
+        </div>
+        <span class="st-value">{equalizer.enabled ? '已开启' : '已关闭'}</span>
+        <label class="st-switch" title={equalizer.enabled ? '关闭均衡器' : '开启均衡器'}>
+          <input
+            type="checkbox"
+            aria-label="开启均衡器"
+            checked={equalizer.enabled}
+            onchange={(e) => {
+              const input = e.currentTarget;
+              if (!setEqualizerEnabled(input.checked) && input.checked) {
+                input.checked = false;
+                showToast('当前系统不支持均衡器，已关闭');
+              }
+            }}
+          />
+          <span class="st-switch-track" aria-hidden="true"></span>
+        </label>
+        <button class="st-btn" onclick={openEqualizer}>调整…</button>
       </div>
     </div>
   </section>

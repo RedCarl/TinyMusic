@@ -20,9 +20,11 @@
     toggleQueue,
     toggleVolume,
     closeVolume,
+    closeQueue,
     toggleShuffle,
     cycleRepeat,
   } from '../lib/player.svelte';
+  import { equalizer, toggleEqualizerPanel, closeEqualizer } from '../lib/equalizer.svelte';
   import { requestDownload, isPending } from '../lib/download.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { go } from '../lib/router.svelte';
@@ -209,6 +211,13 @@
       setVolume(1);
     }
   }
+
+  /** 均衡器面板和播放列表 / 音量浮层互斥 */
+  function openEqPanel() {
+    closeQueue();
+    closeVolume();
+    toggleEqualizerPanel();
+  }
 </script>
 
 {#if player.current}
@@ -360,13 +369,27 @@
     <button
       class="ub queue"
       class:on={player.queueOpen}
-      onclick={toggleQueue}
+      onclick={() => {
+        closeEqualizer();
+        toggleQueue();
+      }}
       title={`播放列表（${player.queue.length} 首）`}
       aria-label="播放列表"
       aria-expanded={player.queueOpen}
     >
       <HugeiconsIcon icon={icons.playlist} size={ICON_SIZE.control} />
       {#if player.queue.length}<span class="count">{player.queue.length}</span>{/if}
+    </button>
+
+    <button
+      class="ub"
+      class:on={equalizer.enabled}
+      onclick={openEqPanel}
+      title={equalizer.enabled ? '均衡器（已开启）' : '均衡器'}
+      aria-label="均衡器"
+      aria-expanded={equalizer.open}
+    >
+      <HugeiconsIcon icon={icons.equalizer} size={ICON_SIZE.control} />
     </button>
 
     <div
@@ -404,7 +427,10 @@
       <button
         class="ub volbtn"
         class:on={player.volumeOpen}
-        onclick={toggleVolume}
+        onclick={() => {
+          closeEqualizer();
+          toggleVolume();
+        }}
         title={volumeLabel}
         aria-label={volumeLabel}
         aria-expanded={player.volumeOpen}

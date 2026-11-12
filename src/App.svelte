@@ -25,9 +25,15 @@
     recoverSource,
   } from './lib/player.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
+  import EqualizerDialog from './components/EqualizerDialog.svelte';
+  import AccountAvatar from './components/AccountAvatar.svelte';
   import TitleBar from './components/TitleBar.svelte';
   import WindowControls from './components/WindowControls.svelte';
   import DownloadDialog from './components/DownloadDialog.svelte';
+  import DownloadFailures from './components/DownloadFailures.svelte';
+  import S3IntegrityDialog from './components/S3IntegrityDialog.svelte';
+  import { addFailures, loadFailures } from './lib/downloadFailures.svelte';
+  import type { FailedDownload } from './lib/api';
   import ContextMenu from './components/ContextMenu.svelte';
   import Toast from './components/Toast.svelte';
   import Search from './routes/Search.svelte';
@@ -45,6 +51,12 @@
   import Lyrics from './routes/Lyrics.svelte';
   import { appCfg, refreshAppCfg } from './lib/config.svelte';
   import { account, hasNetease } from './lib/account.svelte';
+  import {
+    bindEqualizerAudio,
+    equalizer,
+    prepareEqualizerForPlay,
+    setEqualizerVolume,
+  } from './lib/equalizer.svelte';
   import { syncNeteaseSession } from './lib/neteaseLogin';
   import { showToast } from './lib/toast.svelte';
 
@@ -120,6 +132,7 @@
   onMount(() => {
     restoreVolume();
     void loadQualityCapabilities();
+    if (audio) bindEqualizerAudio(audio);
     // 音质以后端设置为准；旧 localStorage 只做一次性迁移（high 实际是 128k）
     import('./lib/api').then(async ({ api: a }) => {
       try {
@@ -146,6 +159,8 @@
     refreshAppCfg().then((s) => {
       if (s?.s3_enabled && s.s3_bucket) api.favoritesPull().catch(() => {});
     });
+    // 「页面里已经出现过真实手势」：托盘 / 自动播放不能用来建 AudioContext
+    let eqGesture = false;
     bindAudio((action, value) => {
       const el = audio;
       if (!el) return;
@@ -155,6 +170,11 @@
           el.load();
           break;
         case 'play':
+          // 均衡器已开启时必须先建链 / 把 AudioContext 拉回 running；
+          // 建链要发生在用户手势里，所以播放动作是最后一道保险。
+          if (prepareEqualizerForPlay(eqGesture) === 'failed') {
+            showToast('均衡器在当前系统不可用，已关闭');
+          }
           el.play().catch((e) => void handlePlayError(e));
           break;
         case 'pause':
@@ -171,6 +191,32 @@
           break;
       }
     });
+
+    // 存档里均衡器是开着的时候，第一次点击 / 按键就建链并解锁 AudioContext。
+    // 浏览器只允许在用户手势里恢复音频上下文，不能等到 play 的异步回调。
+    let eqUnlocked = false;
+    const unlockEq = () => {
+      if (eqUnlocked) return;
+      eqUnlocked = true;
+      eqGesture = true;
+      if (prepareEqualizerForPlay() === 'failed') {
+        showToast('均衡器在当前系统不可用，已关闭');
+      }
+      document.removeEventListener('pointerdown', unlockEq, true);
+      document.removeEventListener('keydown', unlockEq, true);
+    };
+    document.addEventListener('pointerdown', unlockEq, true);
+    document.addEventListener('keydown', unlockEq, true);
+
+    // 下载任务结束且留下失败项 → 弹窗让用户手动重试
+    let unlistenFailures: (() => void) | undefined;
+    listen<FailedDownload[]>('download://failed', (e) => addFailures(e.payload))
+      .then((fn) => (unlistenFailures = fn))
+      .catch(() => {
+        /* 非 Tauri 环境（纯浏览器调试）忽略 */
+      });
+    // 上次没处理完的失败记录：下载页入口用得上
+    void loadFailures();
 
     // 托盘菜单 → 前端动作
     let unlisten: (() => void) | undefined;
@@ -209,17 +255,24 @@
 
     return () => {
       unlisten?.();
+      unlistenFailures?.();
       clearTimeout(firstCheck);
       clearInterval(updateTimer);
+      document.removeEventListener('pointerdown', unlockEq, true);
+      document.removeEventListener('keydown', unlockEq, true);
       window.removeEventListener('pagehide', saveRecord);
       window.removeEventListener('beforeunload', saveRecord);
       document.removeEventListener('visibilitychange', onVisibility);
     };
   });
 
-  // 音量同步
+  // 音量同步：均衡器建链后，音量交给链尾的增益节点，元素自身保持 1，
+  // 避免不同 WebView 对 MediaElementAudioSourceNode 的音量处理不一致。
   $effect(() => {
-    if (audio) audio.volume = player.volume;
+    if (!audio) return;
+    const routed = equalizer.graphReady;
+    setEqualizerVolume(player.volume);
+    audio.volume = routed ? 1 : player.volume;
   });
 
   // 侧边栏按 Apple Music 的分组方式排：顶部单项、资料库、其他、底部账号
@@ -301,9 +354,13 @@
       <button class="foot" class:on={activeNav === 'account'} onclick={() => go({ name: 'account' })}>
         <span class="avatar" class:logged={!!account.uid || hasNetease()}>
           {#if account.uid}
-            {account.uid.slice(0, 1).toUpperCase()}
+            <AccountAvatar seed={`kuwo:${account.uid}`} size={28} />
           {:else if hasNetease()}
-            {(account.netease.nickname || account.netease.uid).slice(0, 1).toUpperCase()}
+            <AccountAvatar
+              seed={`netease:${account.netease.uid || account.netease.nickname}`}
+              src={account.netease.avatar}
+              size={28}
+            />
           {:else}
             <HugeiconsIcon icon={icons.account} size={ICON_SIZE.inline} />
           {/if}
@@ -360,6 +417,9 @@
   {/if}
 
   <DownloadDialog />
+  <DownloadFailures />
+  <S3IntegrityDialog />
+  <EqualizerDialog />
   <ContextMenu />
   <Toast />
 
@@ -371,6 +431,7 @@
   <!-- 隐藏的音频元素：真正的解码/播放器 -->
   <audio
     bind:this={audio}
+    crossorigin="anonymous"
     ontimeupdate={(e) => {
       const a = e.currentTarget as HTMLAudioElement;
       player.progress = a.currentTime;

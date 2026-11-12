@@ -666,6 +666,11 @@ input[type='range']::-moz-range-thumb {
   background-color: color-mix(in oklch, var(--fg) 12%, transparent);
 }
 
+.mini.warn,
+.mini.warn:hover {
+  color: var(--danger);
+}
+
 /* ---- 墨色实心玻璃：需要被按下的那一个 ----
    正面保持平的，只有边缘有光：顶上一道亮线、底下一道暗线、四周一圈发丝线，
    再在下面留一层它站着的阴影。 */
@@ -971,6 +976,7 @@ aside nav button.on .ico {
   flex: none;
   display: grid;
   place-items: center;
+  overflow: hidden;
   border-radius: 50%;
   background-color: var(--glass-control);
   box-shadow:

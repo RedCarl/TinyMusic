@@ -26,6 +26,33 @@ pub struct DownloadRow {
     pub created_at: i64,
 }
 
+/// 下载里失败的一个部分：`audio` / `lyrics` / `cover`
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FailedPart {
+    pub part: String,
+    pub error: String,
+}
+
+/// 一条「下载不完整」记录。
+///
+/// 同一首歌 + 同一个目标只留一条：重试成功就删掉，重试仍失败就原地更新。
+/// 音频成功、只是封面/歌词失败时 `location` 指向已经落盘的文件 / 网盘对象，
+/// 手动重试可以只补那部分，不用整首重下。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FailedDownload {
+    pub id: String,
+    pub track: Track,
+    pub quality: String,
+    /// `local` / `s3`
+    pub target: String,
+    /// 网盘歌单名（本地下载为空）
+    pub playlist: String,
+    /// 本地文件路径或网盘对象 key；音频都没下成功时为空
+    pub location: String,
+    pub parts: Vec<FailedPart>,
+    pub created_at: i64,
+}
+
 const SCHEMA: &str = r#"
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS tracks (
@@ -36,7 +63,12 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 CREATE TABLE IF NOT EXISTS downloads (
   task_id TEXT PRIMARY KEY, provider TEXT, id TEXT, title TEXT, artist TEXT,
-  path TEXT, quality TEXT, bytes INTEGER, status TEXT, created_at INTEGER
+  path TEXT, quality TEXT, bytes INTEGER, status TEXT, created_at INTEGER,
+  track_json TEXT
+);
+CREATE TABLE IF NOT EXISTS download_failures (
+  id TEXT PRIMARY KEY, track TEXT NOT NULL, quality TEXT, target TEXT,
+  playlist TEXT, location TEXT, parts TEXT, created_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS favorites (
   provider TEXT NOT NULL, id TEXT NOT NULL, added_at INTEGER,
@@ -120,6 +152,12 @@ impl Storage {
             "has_advanced",
             "ALTER TABLE tracks ADD COLUMN has_advanced INTEGER NOT NULL DEFAULT 0",
         );
+        ensure_column(
+            &conn,
+            "downloads",
+            "track_json",
+            "ALTER TABLE downloads ADD COLUMN track_json TEXT",
+        );
         migrate(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
@@ -146,6 +184,12 @@ impl Storage {
             "tracks",
             "has_advanced",
             "ALTER TABLE tracks ADD COLUMN has_advanced INTEGER NOT NULL DEFAULT 0",
+        );
+        ensure_column(
+            &conn,
+            "downloads",
+            "track_json",
+            "ALTER TABLE downloads ADD COLUMN track_json TEXT",
         );
         migrate(&conn);
         Ok(Self {
@@ -246,11 +290,13 @@ impl Storage {
         status: &str,
     ) -> Result<()> {
         self.upsert_track(t)?;
+        // 完整曲目留一份：网盘上传后如果资源缺了，还能按 key 找回原平台信息补齐
+        let track_json = serde_json::to_string(t).unwrap_or_default();
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO downloads
-             (task_id,provider,id,title,artist,path,quality,bytes,status,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+             (task_id,provider,id,title,artist,path,quality,bytes,status,created_at,track_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 task_id,
                 t.provider,
@@ -261,10 +307,45 @@ impl Storage {
                 quality.as_str(),
                 bytes,
                 status,
-                now_ts()
+                now_ts(),
+                track_json
             ],
         )?;
         Ok(())
+    }
+
+    /// 网盘上传记录 → 源曲目（`s3://` 路径 → Track），用于完整性检测里「能不能补齐」。
+    ///
+    /// 老记录没有 track_json，用 provider/id/title/artist 拼一个够用的壳：
+    /// 歌词按 id 直接能取，封面再按平台搜一次补上。
+    pub fn list_s3_sources(&self) -> Result<Vec<(String, Track)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT path, track_json, provider, id, title, artist
+             FROM downloads
+             WHERE status='done' AND path LIKE 's3://%'
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let path: String = r.get(0)?;
+            let json: Option<String> = r.get(1)?;
+            let provider: String = r.get(2)?;
+            let id: String = r.get(3)?;
+            let title: String = r.get(4)?;
+            let artist: String = r.get(5)?;
+            let track = json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Track>(s).ok())
+                .unwrap_or_else(|| Track {
+                    provider,
+                    id,
+                    title,
+                    artist,
+                    ..Track::default()
+                });
+            Ok((path, track))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     pub fn update_download(&self, task_id: &str, status: &str, bytes: i64) -> Result<()> {
@@ -280,6 +361,66 @@ impl Storage {
     pub fn clear_downloads(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM downloads", [])?;
+        Ok(())
+    }
+
+    // ---------- 下载失败记录 ----------
+
+    /// 写入/更新一条失败记录（同一首歌 + 同一目标复用 `id`）
+    pub fn upsert_download_failure(&self, f: &FailedDownload) -> Result<()> {
+        let track = serde_json::to_string(&f.track).unwrap_or_default();
+        let parts = serde_json::to_string(&f.parts).unwrap_or_default();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO download_failures
+             (id,track,quality,target,playlist,location,parts,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                f.id,
+                track,
+                f.quality,
+                f.target,
+                f.playlist,
+                f.location,
+                parts,
+                if f.created_at > 0 { f.created_at } else { now_ts() }
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_download_failures(&self) -> Result<Vec<FailedDownload>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id,track,quality,target,playlist,location,parts,created_at
+             FROM download_failures ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let track: String = r.get(1)?;
+            let parts: String = r.get(6)?;
+            Ok(FailedDownload {
+                id: r.get(0)?,
+                track: serde_json::from_str(&track).unwrap_or_default(),
+                quality: r.get(2)?,
+                target: r.get(3)?,
+                playlist: r.get(4)?,
+                location: r.get(5)?,
+                parts: serde_json::from_str(&parts).unwrap_or_default(),
+                created_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    pub fn remove_download_failure(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM download_failures WHERE id=?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn clear_download_failures(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM download_failures", [])?;
         Ok(())
     }
 
@@ -660,5 +801,76 @@ mod tests {
         s.add_favorite(&t).unwrap();
         let list = s.list_favorites().unwrap();
         assert_eq!(list[0].title, "新标题");
+    }
+
+    #[test]
+    fn s3_sources_roundtrip() {
+        let s = Storage::open_in_memory().unwrap();
+        let t = sample();
+        s.insert_download(
+            "x",
+            &t,
+            Quality::Super,
+            "s3://bucket/TinyMusic/喜欢/周杰伦 - 稻香.mp3",
+            10,
+            "done",
+        )
+        .unwrap();
+        let rows = s.list_s3_sources().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "s3://bucket/TinyMusic/喜欢/周杰伦 - 稻香.mp3");
+        assert_eq!(rows[0].1.title, "稻香");
+        assert_eq!(rows[0].1.cover, t.cover, "完整曲目信息要能还原");
+        // 本地下载记录不该混进来
+        s.insert_download("y", &t, Quality::Super, "/tmp/a.mp3", 10, "done")
+            .unwrap();
+        assert_eq!(s.list_s3_sources().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn download_failures_roundtrip() {
+        let s = Storage::open_in_memory().unwrap();
+        let mut f = FailedDownload {
+            id: "local:kuwo:123".into(),
+            track: sample(),
+            quality: "super".into(),
+            target: "local".into(),
+            playlist: String::new(),
+            location: "/tmp/x.mp3".into(),
+            parts: vec![FailedPart {
+                part: "cover".into(),
+                error: "封面 HTTP 403".into(),
+            }],
+            created_at: 0,
+        };
+        s.upsert_download_failure(&f).unwrap();
+        let list = s.list_download_failures().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].track.title, "稻香");
+        assert_eq!(list[0].parts[0].part, "cover");
+        assert!(list[0].created_at > 0);
+
+        // 同 id 覆盖，不产生第二条
+        f.parts = vec![
+            FailedPart {
+                part: "audio".into(),
+                error: "请求超时".into(),
+            },
+            FailedPart {
+                part: "lyrics".into(),
+                error: "请求超时".into(),
+            },
+        ];
+        f.location = String::new();
+        s.upsert_download_failure(&f).unwrap();
+        let list = s.list_download_failures().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].parts.len(), 2);
+
+        s.remove_download_failure("local:kuwo:123").unwrap();
+        assert!(s.list_download_failures().unwrap().is_empty());
+        s.upsert_download_failure(&f).unwrap();
+        s.clear_download_failures().unwrap();
+        assert!(s.list_download_failures().unwrap().is_empty());
     }
 }

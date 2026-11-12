@@ -1,5 +1,7 @@
 //! Tauri 外壳：状态装配 + IPC 命令面。业务逻辑全部在 `tinymusic-core`。
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,12 +15,14 @@ use tauri::{Emitter, Manager, State};
 
 use tinymusic_core::download::{build_filename, build_lrc, DownloadExtras, Downloader};
 use tinymusic_core::http::HttpClient;
+use tinymusic_core::id3;
 use tinymusic_core::model::*;
 use tinymusic_core::providers::kuwo::KuwoProvider;
 use tinymusic_core::providers::netease::{NeteaseProvider, PlayMode};
 use tinymusic_core::proxy::StreamProxy;
 use tinymusic_core::s3::{S3Config, S3};
-use tinymusic_core::storage::{DownloadRow, Storage};
+use tinymusic_core::storage::{DownloadRow, FailedDownload, FailedPart, Storage};
+use tinymusic_core::Error as CoreError;
 
 // ---------- 设置 ----------
 
@@ -308,78 +312,369 @@ async fn push_favorites(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// 点喜欢之后：同步 favorites.json，并把这歌下载到网盘「喜欢」目录
-async fn sync_favorite_track(state: &AppState, track: &Track) -> Result<(), String> {
-    push_favorites(state).await?;
+/// 点喜欢之后：同步 favorites.json，并把这歌下载到网盘「喜欢」目录。
+/// 返回失败记录（有的话）让调用方弹窗。
+async fn sync_favorite_track(state: &AppState, track: &Track) -> Option<FailedDownload> {
+    if push_favorites(state).await.is_err() {
+        return None;
+    }
 
-    let client = s3_client(state)?;
+    let client = s3_client(state).ok()?;
     let settings = state.settings_snapshot();
     let q = Quality::from_str(&settings.default_quality);
-    let p = state.provider(&track.provider)?;
-    let info = p.resolve(track, q).await.map_err(|e| e.to_string())?;
+    let p = state.provider(&track.provider).ok()?;
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("fav-{}-{}", seq, track.id);
-    state
-        .storage
-        .insert_download(&task_id, track, info.quality, "", 0, "running")
-        .map_err(|e| e.to_string())?;
 
-    match upload_track_to_s3(
-        state,
-        &client,
-        track,
-        &info,
-        FAVORITES_PLAYLIST,
-        &task_id,
+    let outcome = upload_one_s3(
+        state.http.clone(),
+        state.storage.clone(),
+        state.downloader.clone(),
+        p,
+        client,
+        track.clone(),
+        q,
+        FAVORITES_PLAYLIST.to_string(),
+        task_id,
         None,
     )
-    .await
-    {
-        Ok(_) => {
-            let _ = state.storage.save_s3_playlist(FAVORITES_PLAYLIST);
-            Ok(())
+    .await;
+
+    if outcome.ok {
+        let _ = state.storage.save_s3_playlist(FAVORITES_PLAYLIST);
+    }
+    outcome.failure
+}
+
+/// 音频 / 歌词 / 封面失败后的自动重试次数（不含首次尝试）
+const PART_RETRIES: u32 = 5;
+
+/// 失败记录的稳定 id：同一首歌 + 同一个目标只留一条
+fn failure_id(target: &str, track: &Track) -> String {
+    format!("{}:{}:{}", target, track.provider, track.id)
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 通用重试：可重试的错误再试 `PART_RETRIES` 次，指数退避。
+///
+/// 「不可用 / 不支持 / 已取消」是确定性结论，重试只是白等，直接返回。
+async fn with_retries<T, F, Fut>(mut op: F) -> Result<T, String>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: Future<Output = std::result::Result<T, CoreError>>,
+{
+    let mut last = String::new();
+    for attempt in 0..=PART_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(400 * (1u64 << attempt.min(3)))).await;
         }
-        Err(e) => {
-            let _ = state
-                .storage
-                .update_download(&task_id, &format!("failed: {}", e), 0);
-            Err(e)
+        match op(attempt).await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if matches!(
+                    e,
+                    CoreError::Unavailable | CoreError::Unsupported(_) | CoreError::Cancelled
+                ) {
+                    return Err(e.to_string());
+                }
+                last = e.to_string();
+            }
         }
+    }
+    Err(last)
+}
+
+/// 组装一条失败记录（调用方负责写入 storage 并通知前端）
+fn failure_record(
+    track: &Track,
+    quality: Quality,
+    target: &str,
+    playlist: &str,
+    location: &str,
+    parts: Vec<FailedPart>,
+) -> FailedDownload {
+    FailedDownload {
+        id: failure_id(target, track),
+        track: track.clone(),
+        quality: quality.as_str().to_string(),
+        target: target.into(),
+        playlist: playlist.into(),
+        location: location.into(),
+        parts,
+        created_at: now_secs(),
     }
 }
 
-/// 下载时顺带准备的封面与歌词（都允许失败，失败就只下音频）
-async fn build_extras(
-    http: &HttpClient,
-    provider: &dyn MusicProvider,
-    track: &Track,
-) -> DownloadExtras {
-    let mut extras = DownloadExtras::default();
+/// 一次下载/上传的结果
+struct TrackOutcome {
+    /// 音频本体是否成功；歌词/封面失败不影响它
+    ok: bool,
+    /// 本地路径或网盘对象 key
+    location: String,
+    /// 有失败（哪怕只是封面）就带上，便于任务结束后弹窗
+    failure: Option<FailedDownload>,
+}
 
-    if let Some(url) = track.cover.as_deref() {
-        if !url.trim().is_empty() {
-            if let Ok(Ok(bytes)) =
-                tokio::time::timeout(Duration::from_secs(10), http.get_bytes("img", url)).await
-            {
-                if !bytes.is_empty() && bytes.len() < 8 * 1024 * 1024 {
+/// 下载时顺带准备的封面与歌词。
+///
+/// 两部分各自失败自动重试；仍然失败就记进 `failures` 交给上层弹窗，
+/// 不阻塞音频本体。
+async fn build_extras(
+    http: Arc<HttpClient>,
+    provider: Arc<dyn MusicProvider>,
+    track: &Track,
+    want_cover: bool,
+    want_lyrics: bool,
+) -> (DownloadExtras, Vec<FailedPart>) {
+    let mut extras = DownloadExtras::default();
+    let mut failures = Vec::new();
+
+    if want_cover {
+        if let Some(url) = track
+            .cover
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+        {
+            let res = with_retries(move |_| {
+                let http = http.clone();
+                let url = url.clone();
+                async move {
+                    let resp =
+                        tokio::time::timeout(Duration::from_secs(10), http.get_range(&url, None))
+                            .await
+                            .map_err(|_| CoreError::Http("封面请求超时".into()))??;
+                    if !resp.status().is_success() {
+                        return Err(CoreError::Http(format!(
+                            "封面 HTTP {}",
+                            resp.status().as_u16()
+                        )));
+                    }
+                    let bytes = resp.bytes().await?.to_vec();
+                    if bytes.is_empty() || bytes.len() >= 8 * 1024 * 1024 {
+                        return Err(CoreError::Http("封面内容不合法".into()));
+                    }
+                    Ok(bytes)
+                }
+            })
+            .await;
+            match res {
+                Ok(bytes) => {
                     extras.cover_mime = sniff_image_mime(&bytes).to_string();
                     extras.cover = Some(bytes);
                 }
+                Err(e) => failures.push(FailedPart {
+                    part: "cover".into(),
+                    error: e,
+                }),
             }
         }
     }
 
-    // 详情接口容易限流/变慢：超时就只下音频，不阻塞整个下载
-    if let Ok(Ok(detail)) =
-        tokio::time::timeout(Duration::from_secs(12), provider.detail(track)).await
-    {
-        if !detail.lyrics.is_empty() {
-            extras.lyrics_lrc = Some(build_lrc(track, &detail.lyrics));
+    if want_lyrics {
+        let detail_provider = provider.clone();
+        let detail_track = track.clone();
+        let res = with_retries(move |_| {
+            let provider = detail_provider.clone();
+            let track = detail_track.clone();
+            async move {
+                // 详情接口容易限流/变慢：超时算失败，交给重试
+                let detail =
+                    tokio::time::timeout(Duration::from_secs(12), provider.detail(&track))
+                        .await
+                        .map_err(|_| CoreError::Http("歌词请求超时".into()))??;
+                Ok(detail.lyrics)
+            }
+        })
+        .await;
+        match res {
+            // 空歌词 = 这首歌本来就没有，不算失败
+            Ok(lines) if !lines.is_empty() => extras.lyrics_lrc = Some(build_lrc(track, &lines)),
+            Ok(_) => {}
+            Err(e) => failures.push(FailedPart {
+                part: "lyrics".into(),
+                error: e,
+            }),
         }
     }
 
-    extras
+    (extras, failures)
+}
+
+fn cover_mime(extras: &DownloadExtras) -> &str {
+    if extras.cover_mime.trim().is_empty() {
+        "image/jpeg"
+    } else {
+        extras.cover_mime.as_str()
+    }
+}
+
+/// 本地下载一首：取流 → 下载音频 → 写歌词 / 封面内嵌，每一步都自动重试。
+///
+/// 失败的音频 / 歌词 / 封面会写进 `download_failures`，任务结束后前端弹窗，
+/// 用户可以只重试失败的部分。
+async fn download_one_local(
+    http: Arc<HttpClient>,
+    storage: Arc<Storage>,
+    downloader: Arc<Downloader>,
+    provider: Arc<dyn MusicProvider>,
+    track: Track,
+    q: Quality,
+    dir: PathBuf,
+    task_id: String,
+    on_progress: Option<Channel<Progress>>,
+) -> TrackOutcome {
+    let _ = storage.insert_download(&task_id, &track, q, "", 0, "running");
+
+    // 1) 取流
+    let (resolve_provider, resolve_track) = (provider.clone(), track.clone());
+    let info = with_retries(move |_| {
+        let provider = resolve_provider.clone();
+        let track = resolve_track.clone();
+        async move { provider.resolve(&track, q).await }
+    })
+    .await;
+
+    let info = match info {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = storage.update_download(&task_id, &format!("failed: {}", e), 0);
+            let failure = failure_record(
+                &track,
+                q,
+                "local",
+                "",
+                "",
+                vec![FailedPart {
+                    part: "audio".into(),
+                    error: e,
+                }],
+            );
+            let _ = storage.upsert_download_failure(&failure);
+            return TrackOutcome {
+                ok: false,
+                location: String::new(),
+                failure: Some(failure),
+            };
+        }
+    };
+
+    let _ = storage.insert_download(&task_id, &track, info.quality, "", 0, "running");
+    let ext = actual_ext(&info);
+    let fname = build_filename(&track, ext);
+
+    // 本地无损不写 ID3，封面没有落点，就不用抓
+    let (extras, mut parts) = build_extras(
+        http,
+        provider,
+        &track,
+        !info.format.lossless,
+        true,
+    )
+    .await;
+
+    // 2) 音频本体（音质档位已经降好，重试时不再降）
+    let res = with_retries({
+        let downloader = downloader.clone();
+        let track = track.clone();
+        let info = info.clone();
+        let dir = dir.clone();
+        let fname = fname.clone();
+        let extras = extras.clone();
+        let ch = on_progress.clone();
+        let tid = task_id.clone();
+        move |_| {
+            let downloader = downloader.clone();
+            let track = track.clone();
+            let info = info.clone();
+            let dir = dir.clone();
+            let fname = fname.clone();
+            let extras = extras.clone();
+            let ch = ch.clone();
+            let tid = tid.clone();
+            async move {
+                downloader
+                    .run(
+                        &track,
+                        &info,
+                        &dir,
+                        &fname,
+                        &extras,
+                        Box::new(move |downloaded, total| {
+                            if let Some(ch) = &ch {
+                                let _ = ch.send(Progress {
+                                    task_id: tid.clone(),
+                                    downloaded,
+                                    total,
+                                });
+                            }
+                        }),
+                    )
+                    .await
+            }
+        }
+    })
+    .await;
+
+    match res {
+        Ok(path) => {
+            let bytes = std::fs::metadata(&path)
+                .map(|m| m.len() as i64)
+                .unwrap_or(0);
+            let location = path.to_string_lossy().to_string();
+            let _ = storage.insert_download(
+                &task_id,
+                &track,
+                info.quality,
+                &location,
+                bytes,
+                "done",
+            );
+            if parts.is_empty() {
+                // 之前失败过但这次下全了：清掉旧记录，别让用户以为还坏着
+                let _ = storage.remove_download_failure(&failure_id("local", &track));
+                TrackOutcome {
+                    ok: true,
+                    location,
+                    failure: None,
+                }
+            } else {
+                let failure =
+                    failure_record(&track, info.quality, "local", "", &location, parts);
+                let _ = storage.upsert_download_failure(&failure);
+                TrackOutcome {
+                    ok: true,
+                    location,
+                    failure: Some(failure),
+                }
+            }
+        }
+        Err(e) => {
+            let _ = storage.update_download(&task_id, &format!("failed: {}", e), 0);
+            parts.insert(
+                0,
+                FailedPart {
+                    part: "audio".into(),
+                    error: e,
+                },
+            );
+            let failure = failure_record(&track, info.quality, "local", "", "", parts);
+            let _ = storage.upsert_download_failure(&failure);
+            TrackOutcome {
+                ok: false,
+                location: String::new(),
+                failure: Some(failure),
+            }
+        }
+    }
 }
 
 // ---------- 命令 ----------
@@ -628,79 +923,41 @@ pub struct Progress {
 
 #[tauri::command]
 async fn download_start(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     track: Track,
     quality: Option<String>,
     on_progress: Channel<Progress>,
 ) -> Result<String, String> {
-    let provider_id = track.provider.clone();
-    let p = state.provider(&provider_id)?;
+    let p = state.provider(&track.provider)?;
     let settings = state.settings_snapshot();
     let q = Quality::from_str(quality.as_deref().unwrap_or(&settings.default_quality));
-
-    // 先取流（同步等待，确保能给出「不可用」的明确错误）
-    let info = p.resolve(&track, q).await.map_err(|e| e.to_string())?;
+    let dir = PathBuf::from(&settings.download_dir);
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("t{}-{}", seq, track.id);
-    let dir = PathBuf::from(&settings.download_dir);
-    let ext = actual_ext(&info);
-    let fname = build_filename(&track, ext);
-
-    state
-        .storage
-        .insert_download(&task_id, &track, info.quality, "", 0, "running")
-        .map_err(|e| e.to_string())?;
-
     let tid = task_id.clone();
-    let dl = state.downloader.clone();
-    let storage = state.storage.clone();
+
     let http = state.http.clone();
+    let storage = state.storage.clone();
+    let downloader = state.downloader.clone();
     let provider = p.clone();
-    let track2 = track.clone();
-    let quality2 = info.quality;
 
     tauri::async_runtime::spawn(async move {
-        // 封面（嵌进 ID3）与歌词（同名 .lrc）都顺带准备好
-        let extras = build_extras(&http, provider.as_ref(), &track2).await;
-        let ch = on_progress.clone();
-        let tid2 = tid.clone();
-        let res = dl
-            .run(
-                &track2,
-                &info,
-                &dir,
-                &fname,
-                &extras,
-                Box::new(move |downloaded, total| {
-                    let _ = ch.send(Progress {
-                        task_id: tid2.clone(),
-                        downloaded,
-                        total,
-                    });
-                }),
-            )
-            .await;
-
-        match res {
-            Ok(path) => {
-                let bytes = std::fs::metadata(&path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0);
-                let _ = storage.update_download(&tid, "done", bytes);
-                // 用最终路径覆盖记录
-                let _ = storage.insert_download(
-                    &tid,
-                    &track2,
-                    quality2,
-                    &path.to_string_lossy(),
-                    bytes,
-                    "done",
-                );
-            }
-            Err(e) => {
-                let _ = storage.update_download(&tid, &format!("failed: {}", e), 0);
-            }
+        let outcome = download_one_local(
+            http,
+            storage,
+            downloader,
+            provider,
+            track,
+            q,
+            dir,
+            tid,
+            Some(on_progress),
+        )
+        .await;
+        if let Some(f) = outcome.failure {
+            let _ = app.emit("download://failed", vec![f]);
         }
     });
 
@@ -781,6 +1038,281 @@ fn download_clear(state: State<'_, AppState>) -> Result<(), String> {
     state.storage.clear_downloads().map_err(|e| e.to_string())
 }
 
+// ---------- 下载失败记录 / 手动重试 ----------
+
+/// 下载不完整的曲目列表（音频 / 歌词 / 封面里哪部分失败、为什么失败）
+#[tauri::command]
+fn download_failures(state: State<'_, AppState>) -> Result<Vec<FailedDownload>, String> {
+    state
+        .storage
+        .list_download_failures()
+        .map_err(|e| e.to_string())
+}
+
+/// 忽略一条失败记录（不删已经下好的文件）
+#[tauri::command]
+fn download_failure_dismiss(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .storage
+        .remove_download_failure(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn download_failures_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .storage
+        .clear_download_failures()
+        .map_err(|e| e.to_string())
+}
+
+/// 无损文件不写 ID3，本地封面没有落点
+fn is_lossless_path(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("flac") | Some("wav")
+    )
+}
+
+/// 音频已经下好，只补本地的歌词 / 封面（不重新下音频）
+async fn repair_local_extras(
+    http: Arc<HttpClient>,
+    provider: Arc<dyn MusicProvider>,
+    track: &Track,
+    path: &std::path::Path,
+    parts: &[FailedPart],
+) -> Vec<FailedPart> {
+    let need_cover = parts.iter().any(|p| p.part == "cover") && !is_lossless_path(path);
+    let need_lyrics = parts.iter().any(|p| p.part == "lyrics");
+    if !need_cover && !need_lyrics {
+        return Vec::new();
+    }
+
+    let (extras, mut left) = build_extras(http, provider, track, need_cover, need_lyrics).await;
+
+    let mime = cover_mime(&extras).to_string();
+    if need_cover {
+        if let Some(cover) = extras.cover {
+            let p = path.to_path_buf();
+            let (title, artist, album) = (
+                track.title.clone(),
+                track.artist.clone(),
+                track.album.clone(),
+            );
+            let res = tokio::task::spawn_blocking(move || {
+                id3::write_tags_with_cover(
+                    &p,
+                    &title,
+                    &artist,
+                    &album,
+                    Some((cover.as_slice(), mime.as_str())),
+                )
+            })
+            .await
+            .map_err(|_| "标签写入线程失败".to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
+            if let Err(e) = res {
+                left.push(FailedPart {
+                    part: "cover".into(),
+                    error: format!("写封面失败: {}", e),
+                });
+            }
+        }
+    }
+
+    if need_lyrics {
+        if let Some(lrc) = extras.lyrics_lrc {
+            if let Err(e) = tokio::fs::write(path.with_extension("lrc"), lrc.as_bytes()).await {
+                left.push(FailedPart {
+                    part: "lyrics".into(),
+                    error: format!("写歌词失败: {}", e),
+                });
+            }
+        }
+    }
+
+    left
+}
+
+/// 网盘音频已经传好，只补歌词 / 封面对象
+async fn repair_s3_extras(
+    http: Arc<HttpClient>,
+    provider: Arc<dyn MusicProvider>,
+    s3: &S3,
+    track: &Track,
+    key: &str,
+    parts: &[FailedPart],
+) -> Vec<FailedPart> {
+    let need_cover = parts.iter().any(|p| p.part == "cover");
+    let need_lyrics = parts.iter().any(|p| p.part == "lyrics");
+    if !need_cover && !need_lyrics {
+        return Vec::new();
+    }
+
+    let (extras, mut left) = build_extras(http, provider, track, need_cover, need_lyrics).await;
+    let mime = cover_mime(&extras).to_string();
+
+    if let Some(lrc) = extras.lyrics_lrc {
+        if let Err(e) = put_object_retry(
+            s3.clone(),
+            replace_ext(key, "lrc"),
+            lrc.into_bytes(),
+            "text/plain; charset=utf-8",
+        )
+        .await
+        {
+            left.push(FailedPart {
+                part: "lyrics".into(),
+                error: e,
+            });
+        }
+    }
+    if let Some(cover) = extras.cover {
+        if let Err(e) = put_object_retry(s3.clone(), replace_ext(key, "jpg"), cover, &mime).await {
+            left.push(FailedPart {
+                part: "cover".into(),
+                error: e,
+            });
+        }
+    }
+    left
+}
+
+/// 重试结束后更新失败记录：补全了就删掉，没补全就原地更新
+fn finish_repair(storage: &Storage, f: &FailedDownload, left: Vec<FailedPart>) {
+    if left.is_empty() {
+        let _ = storage.remove_download_failure(&f.id);
+    } else {
+        let mut updated = f.clone();
+        updated.parts = left;
+        updated.created_at = now_secs();
+        let _ = storage.upsert_download_failure(&updated);
+    }
+}
+
+/// 手动重试：只补失败的部分。
+///
+/// 音频没下成功才整首重来；只是歌词 / 封面失败时直接在原文件 / 原对象上补。
+/// 返回重试之后仍然失败的记录。
+#[tauri::command]
+async fn download_retry_failed(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<Vec<FailedDownload>, String> {
+    let settings = state.settings_snapshot();
+    let dir = PathBuf::from(&settings.download_dir);
+    let all = state
+        .storage
+        .list_download_failures()
+        .map_err(|e| e.to_string())?;
+
+    for id in ids {
+        let Some(f) = all.iter().find(|x| x.id == id).cloned() else {
+            continue;
+        };
+        let q = Quality::from_str(&f.quality);
+        let provider = match state.provider(&f.track.provider) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let audio_broken =
+            f.parts.iter().any(|p| p.part == "audio") || f.location.is_empty();
+
+        if f.target == "s3" {
+            let Ok(s3) = s3_client(&state) else {
+                continue;
+            };
+            if audio_broken {
+                let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+                let task_id = format!("rt{}-{}", seq, f.track.id);
+                let outcome = upload_one_s3(
+                    state.http.clone(),
+                    state.storage.clone(),
+                    state.downloader.clone(),
+                    provider,
+                    s3,
+                    f.track.clone(),
+                    q,
+                    f.playlist.clone(),
+                    task_id,
+                    None,
+                )
+                .await;
+                if outcome.failure.is_none() {
+                    let _ = state.storage.remove_download_failure(&f.id);
+                }
+            } else {
+                let left = repair_s3_extras(
+                    state.http.clone(),
+                    provider,
+                    &s3,
+                    &f.track,
+                    &f.location,
+                    &f.parts,
+                )
+                .await;
+                finish_repair(&state.storage, &f, left);
+            }
+            continue;
+        }
+
+        if audio_broken {
+            let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+            let task_id = format!("rt{}-{}", seq, f.track.id);
+            let outcome = download_one_local(
+                state.http.clone(),
+                state.storage.clone(),
+                state.downloader.clone(),
+                provider,
+                f.track.clone(),
+                q,
+                dir.clone(),
+                task_id,
+                None,
+            )
+            .await;
+            if outcome.failure.is_none() {
+                let _ = state.storage.remove_download_failure(&f.id);
+            }
+            continue;
+        }
+
+        let path = PathBuf::from(&f.location);
+        if !path.is_file() {
+            // 文件被挪走或删掉了：只能整首重下
+            let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+            let task_id = format!("rt{}-{}", seq, f.track.id);
+            let outcome = download_one_local(
+                state.http.clone(),
+                state.storage.clone(),
+                state.downloader.clone(),
+                provider,
+                f.track.clone(),
+                q,
+                dir.clone(),
+                task_id,
+                None,
+            )
+            .await;
+            if outcome.failure.is_none() {
+                let _ = state.storage.remove_download_failure(&f.id);
+            }
+            continue;
+        }
+        let left =
+            repair_local_extras(state.http.clone(), provider, &f.track, &path, &f.parts).await;
+        finish_repair(&state.storage, &f, left);
+    }
+
+    state
+        .storage
+        .list_download_failures()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn favorite_add(
     app: tauri::AppHandle,
@@ -796,7 +1328,9 @@ fn favorite_add(
     let track2 = track.clone();
     tauri::async_runtime::spawn(async move {
         let st = app2.state::<AppState>();
-        let _ = sync_favorite_track(&st, &track2).await;
+        if let Some(f) = sync_favorite_track(&st, &track2).await {
+            let _ = app2.emit("download://failed", vec![f]);
+        }
     });
     Ok(())
 }
@@ -1698,6 +2232,7 @@ async fn favorites(
 /// 批量下载：顺序执行，避免同时对 CDN 发起过多请求
 #[tauri::command]
 async fn download_batch(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     tracks: Vec<Track>,
     quality: Option<String>,
@@ -1711,11 +2246,11 @@ async fn download_batch(
     let dir = PathBuf::from(&settings.download_dir);
 
     let mut ids = Vec::new();
+    let mut failures: Vec<FailedDownload> = Vec::new();
     let mut failed = 0usize;
     let total_n = tracks.len();
 
     for (i, track) in tracks.iter().enumerate() {
-        let p = state.provider(&track.provider)?;
         // 进度先报「第 i 首 / 共 n 首」的起步态，界面能看出在动
         let _ = on_progress.send(Progress {
             task_id: format!("batch-{}-{}", i, track.id),
@@ -1723,8 +2258,8 @@ async fn download_batch(
             total: Some(total_n as u64),
         });
 
-        let info = match p.resolve(track, q).await {
-            Ok(v) => v,
+        let p = match state.provider(&track.provider) {
+            Ok(p) => p,
             Err(_) => {
                 failed += 1;
                 continue;
@@ -1733,54 +2268,26 @@ async fn download_batch(
 
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("b{}-{}", seq, track.id);
-        let fname = build_filename(track, actual_ext(&info));
-        state
-            .storage
-            .insert_download(&task_id, track, info.quality, "", 0, "running")
-            .map_err(|e| e.to_string())?;
+        let outcome = download_one_local(
+            state.http.clone(),
+            state.storage.clone(),
+            state.downloader.clone(),
+            p.clone(),
+            track.clone(),
+            q,
+            dir.clone(),
+            task_id.clone(),
+            Some(on_progress.clone()),
+        )
+        .await;
 
-        let extras = build_extras(&state.http, p.as_ref(), track).await;
-        let ch = on_progress.clone();
-        let tid = task_id.clone();
-        let res = state
-            .downloader
-            .run(
-                track,
-                &info,
-                &dir,
-                &fname,
-                &extras,
-                Box::new(move |d, _t| {
-                    let _ = ch.send(Progress {
-                        task_id: tid.clone(),
-                        downloaded: d,
-                        total: None,
-                    });
-                }),
-            )
-            .await;
-
-        match res {
-            Ok(path) => {
-                let bytes = std::fs::metadata(&path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0);
-                let _ = state.storage.insert_download(
-                    &task_id,
-                    track,
-                    info.quality,
-                    &path.to_string_lossy(),
-                    bytes,
-                    "done",
-                );
-                ids.push(task_id);
-            }
-            Err(e) => {
-                let _ = state
-                    .storage
-                    .update_download(&task_id, &format!("failed: {}", e), 0);
-                failed += 1;
-            }
+        if outcome.ok {
+            ids.push(task_id);
+        } else {
+            failed += 1;
+        }
+        if let Some(f) = outcome.failure {
+            failures.push(f);
         }
     }
 
@@ -1789,6 +2296,9 @@ async fn download_batch(
         downloaded: ids.len() as u64,
         total: Some(total_n as u64),
     });
+    if !failures.is_empty() {
+        let _ = app.emit("download://failed", &failures);
+    }
     if ids.is_empty() && failed > 0 {
         return Err(format!("{} 首全部失败（可能都不可用）", failed));
     }
@@ -2134,6 +2644,9 @@ async fn s3_playlists(state: State<'_, AppState>) -> Result<Vec<S3PlaylistInfo>,
 pub struct S3TrackRow {
     pub key: String,
     pub track: Track,
+    /// 这首歌缺的附属文件：`lyrics` / `cover`（音频本身在，才可能出现在列表里）
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 
 fn parse_track_filename(stem: &str) -> (String, String) {
@@ -2215,11 +2728,24 @@ async fn list_s3_track_rows(client: &S3, name: &str) -> Result<Vec<S3TrackRow>, 
     for key in keys.iter().filter(|k| is_audio_key(k)) {
         let stem = key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key.as_str());
         let (artist, title) = parse_track_filename(stem);
-        let cover = find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"])
-            .and_then(|k| client.presign_get(&k, 6 * 3600).ok());
+        let cover_key = find_sibling(&lower, stem, &["jpg", "jpeg", "png", "webp"]);
+        let cover = cover_key
+            .as_ref()
+            .and_then(|k| client.presign_get(k, 6 * 3600).ok());
+
+        // 列表里顺手标出缺歌词 / 封面的歌，用户不用先跑一遍完整性检测
+        let mut missing = Vec::new();
+        if cover_key.is_none() {
+            missing.push("cover".to_string());
+        }
+        let lrc_name = format!("{}.lrc", stem).to_lowercase();
+        if !lower.iter().any(|(k, _)| *k == lrc_name) {
+            missing.push("lyrics".to_string());
+        }
 
         rows.push(S3TrackRow {
             key: key.clone(),
+            missing,
             track: Track {
                 provider: "s3".into(),
                 id: key.clone(),
@@ -2371,82 +2897,223 @@ fn s3_playlist_create(state: State<'_, AppState>, name: String) -> Result<String
     Ok(name)
 }
 
-/// 下载一首到临时目录，再上传音频 + 歌词 + 封面，最后清掉临时文件
-async fn upload_track_to_s3(
-    state: &AppState,
-    s3: &S3,
-    track: &Track,
-    info: &StreamInfo,
-    playlist: &str,
-    task_id: &str,
-    on_progress: Option<&Channel<Progress>>,
-) -> Result<String, String> {
-    let ext = actual_ext(&info);
-    let key = object_key(&s3.config().prefix, playlist, track, ext);
+/// 上传一个对象，失败自动重试（歌词 / 封面这种小对象单独走一遍）
+async fn put_object_retry(
+    s3: S3,
+    key: String,
+    body: Vec<u8>,
+    content_type: &str,
+) -> Result<(), String> {
+    let ct = content_type.to_string();
+    with_retries(move |_| {
+        let s3 = s3.clone();
+        let key = key.clone();
+        let body = body.clone();
+        let ct = ct.clone();
+        async move { s3.put_object(&key, body, &ct).await }
+    })
+    .await
+}
 
-    let provider = state.provider(&track.provider)?;
-    let extras = build_extras(&state.http, provider.as_ref(), track).await;
+/// 网盘上传一首：取流 → 内存下载（顺带打标签）→ 上传音频 / 歌词 / 封面。
+///
+/// 每一步都自动重试；仍然失败的部分写进 `download_failures`，
+/// 任务结束弹窗让用户手动重试。
+async fn upload_one_s3(
+    http: Arc<HttpClient>,
+    storage: Arc<Storage>,
+    downloader: Arc<Downloader>,
+    provider: Arc<dyn MusicProvider>,
+    s3: S3,
+    track: Track,
+    q: Quality,
+    playlist: String,
+    task_id: String,
+    on_progress: Option<Channel<Progress>>,
+) -> TrackOutcome {
+    let _ = storage.insert_download(&task_id, &track, q, "", 0, "running");
 
-    let ch = on_progress.cloned();
-    let tid = task_id.to_string();
-    // 直接在内存里下载 + 打标签，不写临时文件：避免被杀软误判为「加密/删除用户音乐」
-    let bytes = state
-        .downloader
-        .fetch_bytes(
-            track,
-            info,
-            &extras,
-            Box::new(move |d, t| {
-                if let Some(ch) = &ch {
-                    let _ = ch.send(Progress {
-                        task_id: tid.clone(),
-                        downloaded: d,
-                        total: t,
-                    });
-                }
-            }),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    // 1) 取流
+    let (resolve_provider, resolve_track) = (provider.clone(), track.clone());
+    let info = with_retries(move |_| {
+        let provider = resolve_provider.clone();
+        let track = resolve_track.clone();
+        async move { provider.resolve(&track, q).await }
+    })
+    .await;
+    let info = match info {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = storage.update_download(&task_id, &format!("failed: {}", e), 0);
+            let failure = failure_record(
+                &track,
+                q,
+                "s3",
+                &playlist,
+                "",
+                vec![FailedPart {
+                    part: "audio".into(),
+                    error: e,
+                }],
+            );
+            let _ = storage.upsert_download_failure(&failure);
+            return TrackOutcome {
+                ok: false,
+                location: String::new(),
+                failure: Some(failure),
+            };
+        }
+    };
+
+    let _ = storage.insert_download(&task_id, &track, info.quality, "", 0, "running");
+    let key = object_key(
+        &s3.config().prefix,
+        &playlist,
+        &track,
+        actual_ext(&info),
+    );
+    let location = format!("s3://{}/{}", s3.config().bucket.trim(), key);
+
+    let (extras, mut parts) = build_extras(http, provider, &track, true, true).await;
+
+    // 2) 音频字节：直接在内存里下载 + 打标签，不写临时文件
+    //    （避免被杀软误判为「加密 / 删除用户音乐」）
+    let bytes = with_retries({
+        let downloader = downloader.clone();
+        let track = track.clone();
+        let info = info.clone();
+        let extras = extras.clone();
+        let ch = on_progress.clone();
+        let tid = task_id.clone();
+        move |_| {
+            let downloader = downloader.clone();
+            let track = track.clone();
+            let info = info.clone();
+            let extras = extras.clone();
+            let ch = ch.clone();
+            let tid = tid.clone();
+            async move {
+                downloader
+                    .fetch_bytes(
+                        &track,
+                        &info,
+                        &extras,
+                        Box::new(move |downloaded, total| {
+                            if let Some(ch) = &ch {
+                                let _ = ch.send(Progress {
+                                    task_id: tid.clone(),
+                                    downloaded,
+                                    total,
+                                });
+                            }
+                        }),
+                    )
+                    .await
+            }
+        }
+    })
+    .await;
+
+    let bytes = match bytes {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = storage.update_download(&task_id, &format!("failed: {}", e), 0);
+            parts.insert(
+                0,
+                FailedPart {
+                    part: "audio".into(),
+                    error: e,
+                },
+            );
+            let failure = failure_record(&track, info.quality, "s3", &playlist, "", parts);
+            let _ = storage.upsert_download_failure(&failure);
+            return TrackOutcome {
+                ok: false,
+                location: String::new(),
+                failure: Some(failure),
+            };
+        }
+    };
     let size = bytes.len() as i64;
-    s3.put_object(&key, bytes, audio_content_type(&key))
-        .await
-        .map_err(|e| e.to_string())?;
 
-    if let Some(lrc) = &extras.lyrics_lrc {
-        let lrc_key = replace_ext(&key, "lrc");
-        s3.put_object(
-            &lrc_key,
-            lrc.clone().into_bytes(),
+    // 3) 音频对象
+    let audio_key = key.clone();
+    let s3_audio = s3.clone();
+    let payload = bytes.clone();
+    let uploaded = with_retries(move |_| {
+        let s3 = s3_audio.clone();
+        let key = audio_key.clone();
+        let body = payload.clone();
+        async move { s3.put_object(&key, body, audio_content_type(&key)).await }
+    })
+    .await;
+    if let Err(e) = uploaded {
+        let _ = storage.update_download(&task_id, &format!("failed: {}", e), 0);
+        parts.insert(
+            0,
+            FailedPart {
+                part: "audio".into(),
+                error: e,
+            },
+        );
+        let failure = failure_record(&track, info.quality, "s3", &playlist, "", parts);
+        let _ = storage.upsert_download_failure(&failure);
+        return TrackOutcome {
+            ok: false,
+            location: String::new(),
+            failure: Some(failure),
+        };
+    }
+
+    // 4) 歌词 / 封面对象：失败只记录，不影响已经上传的音频
+    if let Some(lrc) = extras.lyrics_lrc.clone() {
+        if let Err(e) = put_object_retry(
+            s3.clone(),
+            replace_ext(&key, "lrc"),
+            lrc.into_bytes(),
             "text/plain; charset=utf-8",
         )
         .await
-        .map_err(|e| e.to_string())?;
+        {
+            parts.push(FailedPart {
+                part: "lyrics".into(),
+                error: e,
+            });
+        }
+    }
+    if let Some(cover) = extras.cover.clone() {
+        let mime = cover_mime(&extras).to_string();
+        if let Err(e) = put_object_retry(s3.clone(), replace_ext(&key, "jpg"), cover, &mime).await {
+            parts.push(FailedPart {
+                part: "cover".into(),
+                error: e,
+            });
+        }
     }
 
-    if let Some(cover) = &extras.cover {
-        let cover_key = replace_ext(&key, "jpg");
-        let mime = if extras.cover_mime.trim().is_empty() {
-            "image/jpeg"
-        } else {
-            extras.cover_mime.as_str()
-        };
-        s3.put_object(&cover_key, cover.clone(), mime)
-            .await
-            .map_err(|e| e.to_string())?;
+    let _ = storage.insert_download(&task_id, &track, info.quality, &location, size, "done");
+    if parts.is_empty() {
+        // 之前失败过但这次传全了：清掉旧记录
+        let _ = storage.remove_download_failure(&failure_id("s3", &track));
+        TrackOutcome {
+            ok: true,
+            location,
+            failure: None,
+        }
+    } else {
+        let failure = failure_record(&track, info.quality, "s3", &playlist, &location, parts);
+        let _ = storage.upsert_download_failure(&failure);
+        TrackOutcome {
+            ok: true,
+            location,
+            failure: Some(failure),
+        }
     }
-
-    let path_str = format!("s3://{}/{}", s3.config().bucket.trim(), key);
-    state
-        .storage
-        .insert_download(task_id, track, info.quality, &path_str, size, "done")
-        .map_err(|e| e.to_string())?;
-
-    Ok(key)
 }
 
 #[tauri::command]
 async fn s3_download(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     track: Track,
     quality: Option<String>,
@@ -2465,43 +3132,43 @@ async fn s3_download(
     };
 
     let p = state.provider(&track.provider)?;
-    let info = p.resolve(&track, q).await.map_err(|e| e.to_string())?;
 
     let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
     let task_id = format!("s3-{}-{}", seq, track.id);
-    state
-        .storage
-        .insert_download(&task_id, &track, info.quality, "", 0, "running")
-        .map_err(|e| e.to_string())?;
 
-    match upload_track_to_s3(
-        &state,
-        &s3,
-        &track,
-        &info,
-        &playlist,
-        &task_id,
-        Some(&on_progress),
+    let outcome = upload_one_s3(
+        state.http.clone(),
+        state.storage.clone(),
+        state.downloader.clone(),
+        p,
+        s3,
+        track,
+        q,
+        playlist.clone(),
+        task_id,
+        Some(on_progress),
     )
-    .await
-    {
-        Ok(key) => {
-            if !playlist.is_empty() {
-                let _ = state.storage.save_s3_playlist(&playlist);
-            }
-            Ok(key)
-        }
-        Err(e) => {
-            let _ = state
-                .storage
-                .update_download(&task_id, &format!("failed: {}", e), 0);
-            Err(e)
-        }
+    .await;
+
+    if let Some(f) = &outcome.failure {
+        let _ = app.emit("download://failed", vec![f.clone()]);
+    }
+    if !playlist.is_empty() {
+        let _ = state.storage.save_s3_playlist(&playlist);
+    }
+    if outcome.ok {
+        Ok(outcome.location)
+    } else {
+        Err(outcome
+            .failure
+            .and_then(|f| f.parts.first().map(|p| p.error.clone()))
+            .unwrap_or_else(|| "上传失败".into()))
     }
 }
 
 #[tauri::command]
 async fn s3_download_batch(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     tracks: Vec<Track>,
     quality: Option<String>,
@@ -2524,6 +3191,7 @@ async fn s3_download_batch(
 
     let total = tracks.len();
     let mut keys = Vec::new();
+    let mut failures: Vec<FailedDownload> = Vec::new();
     let mut failed = 0usize;
 
     for (i, track) in tracks.iter().enumerate() {
@@ -2533,9 +3201,8 @@ async fn s3_download_batch(
             total: Some(total as u64),
         });
 
-        let p = state.provider(&track.provider)?;
-        let info = match p.resolve(track, q).await {
-            Ok(v) => v,
+        let p = match state.provider(&track.provider) {
+            Ok(p) => p,
             Err(_) => {
                 failed += 1;
                 continue;
@@ -2544,22 +3211,27 @@ async fn s3_download_batch(
 
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("s3b-{}-{}", seq, track.id);
-        if let Err(e) =
-            state
-                .storage
-                .insert_download(&task_id, track, info.quality, "", 0, "running")
-        {
-            return Err(e.to_string());
-        }
+        let outcome = upload_one_s3(
+            state.http.clone(),
+            state.storage.clone(),
+            state.downloader.clone(),
+            p,
+            s3.clone(),
+            track.clone(),
+            q,
+            playlist.clone(),
+            task_id,
+            None,
+        )
+        .await;
 
-        match upload_track_to_s3(&state, &s3, track, &info, &playlist, &task_id, None).await {
-            Ok(k) => keys.push(k),
-            Err(e) => {
-                failed += 1;
-                let _ = state
-                    .storage
-                    .update_download(&task_id, &format!("failed: {}", e), 0);
-            }
+        if outcome.ok {
+            keys.push(outcome.location);
+        } else {
+            failed += 1;
+        }
+        if let Some(f) = outcome.failure {
+            failures.push(f);
         }
     }
 
@@ -2572,6 +3244,9 @@ async fn s3_download_batch(
     if !playlist.is_empty() {
         let _ = state.storage.save_s3_playlist(&playlist);
     }
+    if !failures.is_empty() {
+        let _ = app.emit("download://failed", &failures);
+    }
     if keys.is_empty() && failed > 0 {
         return Err(format!(
             "{} 首全部失败（可能都不可用，或网盘配置有问题）",
@@ -2579,6 +3254,340 @@ async fn s3_download_batch(
         ));
     }
     Ok(keys)
+}
+
+// ---------- 网盘完整性检测 ----------
+
+/// 网盘里一首歌缺了哪一部分
+#[derive(Debug, Clone, Serialize)]
+pub struct S3IntegrityIssue {
+    /// 稳定 id：歌单 + 文件主干（stem）
+    pub id: String,
+    /// 歌单（相对 prefix 的目录名）
+    pub playlist: String,
+    /// 音频 key 去掉扩展名后的完整路径
+    pub stem: String,
+    /// 现存音频 key；音频本身缺失时为空
+    pub key: String,
+    pub title: String,
+    pub artist: String,
+    /// `audio` / `lyrics` / `cover`
+    pub missing: Vec<String>,
+    /// 能用来补齐的来源平台（kuwo / netease）；找不到来源时为空
+    pub source: String,
+    pub can_fix: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct S3IntegrityReport {
+    /// 实际检查了多少个条目（含只剩歌词/封面的残留）
+    pub checked: u32,
+    pub issues: Vec<S3IntegrityIssue>,
+}
+
+struct S3SourceIndex {
+    by_key: HashMap<String, Track>,
+    by_stem: HashMap<String, Track>,
+}
+
+/// 上传记录 → 源曲目索引。
+///
+/// `by_key` 用完整对象 key；`by_stem` 去掉扩展名，用于「音频被删、只剩 sidecar」
+/// 的情况也能找回原平台信息。
+fn s3_source_index(storage: &Storage, bucket: &str) -> S3SourceIndex {
+    let mut by_key = HashMap::new();
+    let mut by_stem = HashMap::new();
+    if let Ok(rows) = storage.list_s3_sources() {
+        for (path, track) in rows {
+            let Some(rest) = path.strip_prefix("s3://") else {
+                continue;
+            };
+            let Some((b, key)) = rest.split_once('/') else {
+                continue;
+            };
+            if b != bucket {
+                continue;
+            }
+            by_stem
+                .entry(stem_of(key).to_string())
+                .or_insert_with(|| track.clone());
+            by_key.entry(key.to_string()).or_insert(track);
+        }
+    }
+    S3SourceIndex { by_key, by_stem }
+}
+
+fn stem_of(key: &str) -> &str {
+    key.rsplit_once('.').map(|(a, _)| a).unwrap_or(key)
+}
+
+fn is_image_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    [".jpg", ".jpeg", ".png", ".webp"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+}
+
+fn is_lrc_key(key: &str) -> bool {
+    key.to_ascii_lowercase().ends_with(".lrc")
+}
+
+/// 常见的「整张专辑/文件夹一张图」文件名，别当成某首歌的封面去报缺音频
+fn is_folder_art(stem: &str) -> bool {
+    let name = stem.rsplit('/').next().unwrap_or(stem).to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "cover" | "folder" | "album" | "albumart" | "album_art" | "front" | "artwork" | "thumb"
+    )
+}
+
+/// 目录 → 歌单名（prefix 之下的一级目录；根目录里的散歌为空）
+fn folder_playlist(prefix: &str, folder: &str) -> String {
+    let p = prefix.trim_matches('/');
+    if p.is_empty() {
+        folder.trim_matches('/').to_string()
+    } else {
+        folder
+            .strip_prefix(p)
+            .unwrap_or(folder)
+            .trim_matches('/')
+            .to_string()
+    }
+}
+
+/// 扫描网盘（整库或单个歌单），找出缺音频 / 歌词 / 封面的条目
+async fn check_s3_integrity(
+    storage: &Storage,
+    s3: &S3,
+    only: Option<&str>,
+) -> Result<S3IntegrityReport, String> {
+    let prefix = s3.normalized_prefix();
+    let scope = match only.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(pl) => playlist_prefix(&prefix, pl),
+        None => {
+            if prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{}/", prefix)
+            }
+        }
+    };
+    let keys = s3
+        .list_keys_all(&scope)
+        .await
+        .map_err(|e| e.to_string())?;
+    let sources = s3_source_index(storage, s3.config().bucket.trim());
+    Ok(analyze_s3_keys(&keys, &prefix, &sources))
+}
+
+/// 纯逻辑：把对象清单按「目录 + 文件主干」分组，找缺失的部分。
+///
+/// 抽出来是为了能不开网盘直接测：音频在、缺歌词/封面；只剩 sidecar 的算缺音频。
+fn analyze_s3_keys(keys: &[String], prefix: &str, sources: &S3SourceIndex) -> S3IntegrityReport {
+    // 目录 → 小写 stem → 这一组里有哪些文件
+    #[derive(Default)]
+    struct Group {
+        stem: String,
+        audio: Option<String>,
+        lrc: bool,
+        cover: bool,
+    }
+    let mut folders: HashMap<String, HashMap<String, Group>> = HashMap::new();
+    for key in keys {
+        let folder = key
+            .rsplit_once('/')
+            .map(|(f, _)| f.to_string())
+            .unwrap_or_default();
+        let stem = stem_of(key).to_string();
+        let entry = folders
+            .entry(folder)
+            .or_default()
+            .entry(stem.to_ascii_lowercase())
+            .or_insert_with(|| Group {
+                stem,
+                ..Default::default()
+            });
+        if is_audio_key(key) {
+            entry.audio = Some(key.clone());
+        } else if is_lrc_key(key) {
+            entry.lrc = true;
+        } else if is_image_key(key) {
+            entry.cover = true;
+        }
+    }
+
+    let mut checked = 0u32;
+    let mut issues = Vec::new();
+    for (folder, groups) in folders {
+        let playlist = folder_playlist(prefix, &folder);
+        for group in groups.into_values() {
+            // 既不是音频、也不是歌词/封面（比如 favorites.json）就跳过
+            if group.audio.is_none() && !group.lrc && !group.cover {
+                continue;
+            }
+            // 文件夹级的 cover.jpg / folder.jpg 不是某首歌的附属文件
+            if group.audio.is_none() && is_folder_art(&group.stem) {
+                continue;
+            }
+            checked += 1;
+            let mut missing = Vec::new();
+            if group.audio.is_none() {
+                missing.push("audio".to_string());
+            }
+            if group.audio.is_some() && !group.lrc {
+                missing.push("lyrics".to_string());
+            }
+            if group.audio.is_some() && !group.cover {
+                missing.push("cover".to_string());
+            }
+            if missing.is_empty() {
+                continue;
+            }
+            let (artist, title) = parse_track_filename(&group.stem);
+            let source = match &group.audio {
+                Some(key) => sources.by_key.get(key),
+                None => sources.by_stem.get(&group.stem),
+            };
+            issues.push(S3IntegrityIssue {
+                id: format!("{}:{}", playlist, group.stem),
+                playlist: playlist.clone(),
+                stem: group.stem.clone(),
+                key: group.audio.unwrap_or_default(),
+                title,
+                artist,
+                missing,
+                source: source.map(|t| t.provider.clone()).unwrap_or_default(),
+                can_fix: source.is_some(),
+            });
+        }
+    }
+    issues.sort_by(|a, b| a.playlist.cmp(&b.playlist).then(a.stem.cmp(&b.stem)));
+    S3IntegrityReport { checked, issues }
+}
+
+/// 老上传记录没有封面地址：按「标题 + 歌手」搜一次，优先取同一个曲目 id
+async fn lookup_cover(state: &AppState, track: &Track) -> Option<String> {
+    if track
+        .cover
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|u| !u.is_empty())
+    {
+        return track.cover.clone();
+    }
+    let provider = state.provider(&track.provider).ok()?;
+    let page = provider
+        .search(&format!("{} {}", track.title, track.artist), 1, 20)
+        .await
+        .ok()?;
+    page.items
+        .iter()
+        .find(|t| t.id == track.id)
+        .or_else(|| {
+            page.items
+                .iter()
+                .find(|t| t.title == track.title && t.artist == track.artist)
+        })
+        .and_then(|t| t.cover.clone())
+}
+
+#[tauri::command]
+async fn s3_integrity_check(
+    state: State<'_, AppState>,
+    playlist: Option<String>,
+) -> Result<S3IntegrityReport, String> {
+    let s3 = s3_client(&state)?;
+    check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await
+}
+
+/// 补齐选中的条目：缺音频就整首重传，只缺歌词/封面就补对象。
+/// 返回补齐后重新扫描的结果。
+#[tauri::command]
+async fn s3_integrity_fix(
+    state: State<'_, AppState>,
+    playlist: Option<String>,
+    ids: Vec<String>,
+    on_progress: Channel<Progress>,
+) -> Result<S3IntegrityReport, String> {
+    let s3 = s3_client(&state)?;
+    let report = check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await?;
+    let sources = s3_source_index(&state.storage, s3.config().bucket.trim());
+    let settings = state.settings_snapshot();
+    let q = Quality::from_str(&settings.default_quality);
+
+    let total = ids.len() as u64;
+    for (done, id) in ids.iter().enumerate() {
+        let _ = on_progress.send(Progress {
+            task_id: id.clone(),
+            downloaded: done as u64,
+            total: Some(total),
+        });
+        let Some(issue) = report.issues.iter().find(|i| &i.id == id) else {
+            continue;
+        };
+        let source = if issue.key.is_empty() {
+            sources.by_stem.get(&issue.stem)
+        } else {
+            sources.by_key.get(&issue.key)
+        };
+        let Some(source) = source.cloned() else {
+            continue;
+        };
+        let provider = match state.provider(&source.provider) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let mut track = source;
+        let has_cover = track
+            .cover
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|u| !u.is_empty());
+        if issue.missing.iter().any(|p| p == "cover") && !has_cover {
+            if let Some(cover) = lookup_cover(&state, &track).await {
+                track.cover = Some(cover);
+            }
+        }
+
+        if issue.missing.iter().any(|p| p == "audio") {
+            let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+            let task_id = format!("fx{}-{}", seq, track.id);
+            let _ = upload_one_s3(
+                state.http.clone(),
+                state.storage.clone(),
+                state.downloader.clone(),
+                provider,
+                s3.clone(),
+                track,
+                q,
+                issue.playlist.clone(),
+                task_id,
+                None,
+            )
+            .await;
+        } else {
+            let parts: Vec<FailedPart> = issue
+                .missing
+                .iter()
+                .filter(|p| p.as_str() != "audio")
+                .map(|p| FailedPart {
+                    part: p.clone(),
+                    error: "网盘里缺失".into(),
+                })
+                .collect();
+            let _ = repair_s3_extras(
+                state.http.clone(),
+                provider,
+                &s3,
+                &track,
+                &issue.key,
+                &parts,
+            )
+            .await;
+        }
+    }
+
+    check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await
 }
 
 // ---------- 歌单一键导入网盘 ----------
@@ -2596,6 +3605,7 @@ pub struct S3ImportResult {
 /// 目标歌单（桶内目录）默认沿用平台歌单名，也可以在导入弹窗里改。
 #[tauri::command]
 async fn s3_import_playlist(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     provider: String,
     playlist_id: String,
@@ -2623,6 +3633,7 @@ async fn s3_import_playlist(
 
     let mut uploaded = 0u32;
     let mut failed = 0u32;
+    let mut failures: Vec<FailedDownload> = Vec::new();
 
     for (i, track) in tracks.iter().enumerate() {
         let _ = on_progress.send(Progress {
@@ -2631,32 +3642,29 @@ async fn s3_import_playlist(
             total: Some(total as u64),
         });
 
-        let info = match p.resolve(track, q).await {
-            Ok(v) => v,
-            Err(_) => {
-                failed += 1;
-                continue;
-            }
-        };
-
         let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
         let task_id = format!("imp-{}-{}", seq, track.id);
-        if let Err(e) =
-            state
-                .storage
-                .insert_download(&task_id, track, info.quality, "", 0, "running")
-        {
-            return Err(e.to_string());
-        }
+        let outcome = upload_one_s3(
+            state.http.clone(),
+            state.storage.clone(),
+            state.downloader.clone(),
+            p.clone(),
+            s3.clone(),
+            track.clone(),
+            q,
+            target_name.clone(),
+            task_id,
+            None,
+        )
+        .await;
 
-        match upload_track_to_s3(&state, &s3, track, &info, &target_name, &task_id, None).await {
-            Ok(_) => uploaded += 1,
-            Err(e) => {
-                failed += 1;
-                let _ = state
-                    .storage
-                    .update_download(&task_id, &format!("failed: {}", e), 0);
-            }
+        if outcome.ok {
+            uploaded += 1;
+        } else {
+            failed += 1;
+        }
+        if let Some(f) = outcome.failure {
+            failures.push(f);
         }
     }
 
@@ -2666,6 +3674,9 @@ async fn s3_import_playlist(
         total: Some(total as u64),
     });
 
+    if !failures.is_empty() {
+        let _ = app.emit("download://failed", &failures);
+    }
     if uploaded == 0 {
         return Err(format!(
             "{} 首全部失败（可能都不可用，或网盘配置有问题）",
@@ -2839,6 +3850,10 @@ pub fn run() {
             download_start,
             download_list,
             download_clear,
+            download_failures,
+            download_failure_dismiss,
+            download_failures_clear,
+            download_retry_failed,
             favorite_add,
             favorite_remove,
             favorite_list,
@@ -2884,6 +3899,8 @@ pub fn run() {
             s3_download,
             s3_download_batch,
             s3_import_playlist,
+            s3_integrity_check,
+            s3_integrity_fix,
             hide_to_tray,
         ])
         .build(tauri::generate_context!())
@@ -2895,4 +3912,120 @@ pub fn run() {
                 show_main(_app);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+
+    /// 失败一次、第二次成功：重试按预期收手
+    #[tokio::test]
+    async fn retries_until_success() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let res: Result<u32, String> = with_retries(move |_| {
+            let c = c.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                if n < 2 {
+                    Err(CoreError::Http("boom".into()))
+                } else {
+                    Ok(n)
+                }
+            }
+        })
+        .await;
+        assert_eq!(res.unwrap(), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// 完整 / 缺歌词封面 / 只剩 sidecar（音频没了）三种情况
+    #[test]
+    fn integrity_flags_missing_parts() {
+        let keys: Vec<String> = [
+            "TinyMusic/喜欢/周杰伦 - 稻香.mp3",
+            "TinyMusic/喜欢/周杰伦 - 稻香.lrc",
+            "TinyMusic/喜欢/周杰伦 - 稻香.jpg",
+            "TinyMusic/喜欢/林俊杰 - 江南.mp3",
+            "TinyMusic/喜欢/王菲 - 红豆.lrc",
+            "TinyMusic/喜欢/王菲 - 红豆.jpg",
+            "TinyMusic/favorites.json",
+            "TinyMusic/喜欢/cover.jpg",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let sources = S3SourceIndex {
+            by_key: HashMap::new(),
+            by_stem: HashMap::new(),
+        };
+        let report = analyze_s3_keys(&keys, "TinyMusic", &sources);
+        assert_eq!(report.checked, 3, "favorites.json 不该被算成一首歌");
+        assert_eq!(report.issues.len(), 2);
+
+        let jiangnan = report
+            .issues
+            .iter()
+            .find(|i| i.title == "江南")
+            .expect("缺歌词和封面应该报出来");
+        assert_eq!(jiangnan.artist, "林俊杰");
+        assert_eq!(jiangnan.playlist, "喜欢");
+        assert_eq!(jiangnan.missing, vec!["lyrics", "cover"]);
+        assert!(!jiangnan.can_fix);
+
+        let hongdou = report
+            .issues
+            .iter()
+            .find(|i| i.title == "红豆")
+            .expect("只剩歌词/封面应该报缺音频");
+        assert_eq!(hongdou.missing, vec!["audio"]);
+        assert!(hongdou.key.is_empty());
+
+        assert!(!report.issues.iter().any(|i| i.title == "稻香"));
+    }
+
+    /// 有本机上传记录 → 能补齐，并带上来源平台
+    #[test]
+    fn integrity_marks_fixable_with_source() {
+        let keys: Vec<String> = ["TinyMusic/喜欢/林俊杰 - 江南.mp3"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut by_key = HashMap::new();
+        by_key.insert(
+            "TinyMusic/喜欢/林俊杰 - 江南.mp3".to_string(),
+            Track {
+                provider: "kuwo".into(),
+                id: "42".into(),
+                ..Default::default()
+            },
+        );
+        let sources = S3SourceIndex {
+            by_key,
+            by_stem: HashMap::new(),
+        };
+        let report = analyze_s3_keys(&keys, "TinyMusic", &sources);
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.issues[0].can_fix);
+        assert_eq!(report.issues[0].source, "kuwo");
+        assert_eq!(report.issues[0].missing, vec!["lyrics", "cover"]);
+    }
+
+    /// 「不可用」是确定性结论，不重试，免得白等
+    #[tokio::test]
+    async fn unavailable_is_not_retried() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        let res: Result<u32, String> = with_retries(move |_| {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(CoreError::Unavailable)
+            }
+        })
+        .await;
+        assert!(res.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

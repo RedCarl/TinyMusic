@@ -4,6 +4,7 @@
   import { icons, ICON_SIZE } from '../lib/icons';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
+  import { failureUi, loadFailures, openFailures } from '../lib/downloadFailures.svelte';
   import { copyText, showToast } from '../lib/toast.svelte';
   import DownloadsSkeleton from '../components/DownloadsSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
@@ -29,6 +30,7 @@
 
   $effect(() => {
     refresh();
+    void loadFailures();
     timer = setInterval(refresh, 1500) as unknown as number;
     return () => clearInterval(timer);
   });
@@ -112,6 +114,12 @@
       <HugeiconsIcon icon={icons.folder} size={ICON_SIZE.inline} />
       打开目录
     </button>
+    {#if failureUi.items.length > 0}
+      <button class="mini warn" onclick={openFailures}>
+        <HugeiconsIcon icon={icons.refresh} size={ICON_SIZE.inline} />
+        {failureUi.items.length} 首没下完整
+      </button>
+    {/if}
     {#if rows.length > 0}
       <button class="mini" onclick={() => (confirmClear = true)}>
         <HugeiconsIcon icon={icons.trash} size={ICON_SIZE.inline} />
