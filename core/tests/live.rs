@@ -156,6 +156,21 @@ async fn live_artist_and_album_grouping() {
     assert!(!page.tracks.is_empty());
 }
 
+/// 专辑页必须一次拿全整张专辑，不能只给搜索命中的那几首
+#[tokio::test]
+#[ignore]
+async fn live_album_full_tracklist() {
+    let p = provider();
+    // Jay (2000)：10 首
+    let page = p.album("1286", "Jay", 0).await.expect("专辑页失败");
+    println!("专辑 {} / {}：{} 首", page.name, page.artist, page.tracks.len());
+    let titles: Vec<&str> = page.tracks.iter().map(|t| t.title.as_str()).collect();
+    println!("  {:?}", titles);
+    assert!(page.tracks.len() >= 9, "应有整张专辑的曲目，实际 {}", page.tracks.len());
+    assert!(titles.iter().any(|t| t.contains("可爱女人")));
+    assert!(titles.iter().any(|t| t.contains("反方向的钟")));
+}
+
 #[tokio::test]
 #[ignore]
 async fn live_stream_proxy_supports_range() {

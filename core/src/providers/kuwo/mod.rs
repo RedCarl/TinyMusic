@@ -11,7 +11,9 @@
 //!    这条链路服务端只校验请求合法性，与 VIP 状态无关，会员曲也能拿到完整音频。
 //! 5. `payInfo` / 搜索结果的 `PAY` 字段不可作为「不可播放」判据
 //!    （`PAY=16711935` 只代表会员内容，实测仍能通过 4 取到整曲）。
-//! 6. 艺人页 / 专辑页不依赖额外端点，用搜索结果按 `ARTISTID` / `ALBUMID` 归组。
+//! 6. 专辑页走 `searchlist.kuwo.cn/r.s?stype=albuminfo&albumid=`（网页版专辑页自己在用），
+//!    一次拿全整张；搜索命中的歌只有几首，早期按 `ALBUMID` 归组的做法会漏歌，
+//!    现在只作为接口不可用时的兜底。艺人页仍按 `ARTISTID` 从搜索结果归组。
 
 pub mod crypt;
 
@@ -33,6 +35,8 @@ pub const RESOLVE_HOST: &str = "antiserver.kuwo.cn";
 pub const DETAIL_HOST: &str = "m.kuwo.cn";
 
 pub const PLAYLIST_HOST: &str = "nplserver.kuwo.cn";
+/// 专辑曲目：网页版专辑页自己用的接口，一次返回整张专辑
+pub const ALBUM_HOST: &str = "searchlist.kuwo.cn";
 /// 资源管理服务：签发 trackmedia 直链
 pub const RES_MANAGE_HOST: &str = "deliver.kuwo.cn";
 
@@ -891,6 +895,113 @@ impl KuwoProvider {
             .find(|l| l.starts_with("http"))
             .map(|l| l.replacen("http://", "https://", 1))
     }
+
+    /// 老办法：按专辑名搜索，再用 ALBUMID 归组（接口不可用时的兜底）
+    async fn album_from_search(&self, album_id: &str, name: &str, page: u32) -> Result<AlbumPage> {
+        let sp = self.search(name, page, 50).await?;
+        let mut tracks: Vec<Track> = sp
+            .items
+            .iter()
+            .filter(|t| t.album_id == album_id)
+            .cloned()
+            .collect();
+        if tracks.is_empty() {
+            tracks = sp.items.clone();
+        }
+        let first = tracks.first().cloned().unwrap_or_default();
+        Ok(AlbumPage {
+            album_id: album_id.to_string(),
+            name: if name.is_empty() {
+                first.album.clone()
+            } else {
+                name.to_string()
+            },
+            artist: first.artist,
+            cover: first.cover,
+            tracks,
+        })
+    }
+
+    /// 专辑接口：`searchlist.kuwo.cn/r.s?stype=albuminfo&albumid=<id>`
+    async fn album_by_id(&self, album_id: &str, name: &str) -> Result<AlbumPage> {
+        let url = format!(
+            "https://searchlist.kuwo.cn/r.s?stype=albuminfo&albumid={}",
+            album_id
+        );
+        let body = self.http.get_text(ALBUM_HOST, &url).await?;
+        Self::parse_album(&body, album_id, name)
+    }
+
+    /// 解析专辑接口的响应（伪 JSON，和搜索同一个解析器）
+    pub fn parse_album(body: &str, album_id: &str, fallback_name: &str) -> Result<AlbumPage> {
+        let v = kwjson::parse(body)?;
+        let tracks: Vec<Track> = v
+            .get("musiclist")
+            .and_then(|m| m.as_array())
+            .map(|arr| arr.iter().map(Self::map_album_track).collect())
+            .unwrap_or_default();
+
+        let cover = {
+            let album_pic = first_nonempty(&[kwjson::s(&v, "hts_img"), kwjson::s(&v, "img")]);
+            if album_pic.is_empty() {
+                tracks.first().and_then(|t| t.cover.clone())
+            } else {
+                Some(normalize_cdn(&album_pic))
+            }
+        };
+        let name = first_nonempty(&[kwjson::s(&v, "album"), kwjson::s(&v, "name")]);
+        Ok(AlbumPage {
+            album_id: if album_id.is_empty() {
+                kwjson::u(&v, "albumid").to_string()
+            } else {
+                album_id.to_string()
+            },
+            name: if name.is_empty() {
+                fallback_name.to_string()
+            } else {
+                clean(&name)
+            },
+            artist: clean(&first_nonempty(&[kwjson::s(&v, "artist"), kwjson::s(&v, "fartist")])),
+            cover,
+            tracks,
+        })
+    }
+
+    /// 专辑接口里的一首歌：字段是 `name` / `artist` / `albumId` / `musicrid` 这一套
+    pub fn map_album_track(v: &Value) -> Track {
+        let rid = first_nonempty(&[kwjson::s(v, "musicrid"), kwjson::s(v, "id")]);
+        let id = rid.trim_start_matches("MUSIC_").to_string();
+        let album_id = {
+            let n = kwjson::u(v, "albumId");
+            if n > 0 {
+                n.to_string()
+            } else {
+                kwjson::s(v, "albumid")
+            }
+        };
+        let cover_key = kwjson::s(v, "web_albumpic_short");
+        let (available_qualities, has_advanced) = Self::quality_fields(v);
+        Track {
+            provider: "kuwo".into(),
+            id,
+            title: clean(&first_nonempty(&[kwjson::s(v, "name"), kwjson::s(v, "songname")])),
+            artist: clean(&first_nonempty(&[kwjson::s(v, "artist"), kwjson::s(v, "fartist")])),
+            artist_id: first_nonempty(&[kwjson::s(v, "artistid"), kwjson::s(v, "allartistid")]),
+            album: clean(&kwjson::s(v, "album")),
+            album_id,
+            duration_sec: kwjson::u(v, "duration"),
+            cover: if cover_key.is_empty() {
+                None
+            } else {
+                Some(format!("{}{}", COVER_BASE, cover_key))
+            },
+            availability: probe_availability_hint(v),
+            subtitle: None,
+            hot: kwjson::u(v, "hot"),
+            available_qualities,
+            has_advanced,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -1031,29 +1142,16 @@ impl MusicProvider for KuwoProvider {
     }
 
     async fn album(&self, album_id: &str, name: &str, page: u32) -> Result<AlbumPage> {
-        let sp = self.search(name, page, 50).await?;
-        let mut tracks: Vec<Track> = sp
-            .items
-            .iter()
-            .filter(|t| t.album_id == album_id)
-            .cloned()
-            .collect();
-        if tracks.is_empty() {
-            tracks = sp.items.clone();
+        // 专辑页走「专辑接口」：搜索只覆盖前若干页命中的歌，一张 10 首的专辑常常
+        // 只捞到 3 首。接口拿不到的时候再退回搜索归组。
+        if let Ok(found) = self.album_by_id(album_id, name).await {
+            if !found.tracks.is_empty() {
+                return Ok(found);
+            }
         }
-        let first = tracks.first().cloned().unwrap_or_default();
-        Ok(AlbumPage {
-            album_id: album_id.to_string(),
-            name: if name.is_empty() {
-                first.album.clone()
-            } else {
-                name.to_string()
-            },
-            artist: first.artist,
-            cover: first.cover,
-            tracks,
-        })
+        self.album_from_search(album_id, name, page).await
     }
+
 
     async fn search_playlists(&self, kw: &str, page: u32, limit: u32) -> Result<PlaylistPage> {
         let key = format!("pl|{}|{}|{}", kw, page, limit);
@@ -1242,6 +1340,34 @@ mod tests {
         assert!(p.bio.unwrap_or_default().contains("华语流行男歌手"));
         assert!(p.meta.iter().any(|(k, v)| k == "生日" && v == "1979-01-18"));
         assert!(p.meta.iter().any(|(k, v)| k == "地区" && v == "中国台湾"));
+    }
+
+    /// 专辑接口：一张 10 首的专辑要一次拿全，而不是搜索命中几首就几首
+    #[test]
+    fn parses_album_tracklist() {
+        let body = r#"{'albumid':'1286','album':'Jay','artist':'周杰伦','artistid':'336','hts_img':'https://img4.kuwo.cn/star/albumcover/240/s4s32/71/2716993423.jpg','musiclist':[{'MINFO':'level:ff,bitrate:2000,format:flac,size:26.42Mb;level:h,bitrate:320,format:mp3,size:9.12Mb','id':'215258','musicrid':'MUSIC_215258','name':'可爱女人','artist':'周杰伦','artistid':'336','album':'Jay','albumId':1286,'duration':'239','web_albumpic_short':'120/s4s32/71/2716993423.jpg','hot':'3'},{'MINFO':'level:h,bitrate:320,format:mp3,size:9.12Mb','id':'215259','musicrid':'MUSIC_215259','name':'完美主义','artist':'周杰伦','artistid':'336','album':'Jay','albumId':1286,'duration':'241','web_albumpic_short':'120/s4s32/71/2716993423.jpg','hot':'1'}]}"#;
+        let page = KuwoProvider::parse_album(body, "1286", "").expect("专辑响应应该能解析");
+        assert_eq!(page.album_id, "1286");
+        assert_eq!(page.name, "Jay");
+        assert_eq!(page.artist, "周杰伦");
+        assert!(page.cover.unwrap_or_default().starts_with("https://img4.kuwo.cn/"));
+
+        assert_eq!(page.tracks.len(), 2, "整张专辑都要在");
+        let first = &page.tracks[0];
+        assert_eq!(first.id, "215258");
+        assert_eq!(first.title, "可爱女人");
+        assert_eq!(first.artist, "周杰伦");
+        assert_eq!(first.artist_id, "336");
+        assert_eq!(first.album, "Jay");
+        assert_eq!(first.album_id, "1286");
+        assert_eq!(first.duration_sec, 239);
+        assert!(first.available_qualities.contains(&Quality::Lossless));
+        assert!(first
+            .cover
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with(COVER_BASE));
+        assert_eq!(page.tracks[1].id, "215259");
     }
 
     const SEARCH_FIXTURE: &str = include_str!("../../../tests/fixtures/search_daoxiang.json");
