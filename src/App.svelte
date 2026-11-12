@@ -32,6 +32,7 @@
   import DownloadDialog from './components/DownloadDialog.svelte';
   import DownloadFailures from './components/DownloadFailures.svelte';
   import S3IntegrityDialog from './components/S3IntegrityDialog.svelte';
+  import ErrorNotice from './components/ErrorNotice.svelte';
   import { addFailures, loadFailures } from './lib/downloadFailures.svelte';
   import type { FailedDownload } from './lib/api';
   import ContextMenu from './components/ContextMenu.svelte';
@@ -380,7 +381,7 @@
   </aside>
 
   <main bind:this={mainEl} class:no-player={!player.current}>
-    {#if bootErr}<div class="err">{bootErr}</div>{/if}
+    {#if bootErr}<ErrorNotice text={bootErr} />{/if}
     {#if router.route.name === 'search'}
       <Search />
     {:else if router.route.name === 'recommend'}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { onDestroy, onMount } from 'svelte';
   import { api } from '../lib/api';
@@ -140,7 +141,7 @@
 <div class="page">
   <h1>账号</h1>
 
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<ErrorNotice text={err} />{/if}
 
   <div class="acct-grid">
     {#each PLATFORMS as p (p.id)}
@@ -217,7 +218,7 @@
   </div>
 
   {#if neErr}
-    <div class="err">{neErr}</div>
+    <ErrorNotice text={neErr} />
   {/if}
 </div>
 

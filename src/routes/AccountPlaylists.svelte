@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type PlaylistRef } from '../lib/api';
@@ -75,7 +76,7 @@
   <BackLink />
   <h1>账号歌单</h1>
 
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<ErrorNotice text={err} />{/if}
 
   <ImportQueue />
 

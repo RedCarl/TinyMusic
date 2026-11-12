@@ -8,6 +8,7 @@
   import { copyText, showToast } from '../lib/toast.svelte';
   import DownloadsSkeleton from '../components/DownloadsSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
+  import ErrorNotice from '../components/ErrorNotice.svelte';
 
   let rows = $state<DownloadRow[]>([]);
   let loaded = $state(false);
@@ -128,7 +129,7 @@
     {/if}
   </div>
 
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<ErrorNotice text={err} />{/if}
 
   {#if skel.visible}
     <DownloadsSkeleton rows={6} />

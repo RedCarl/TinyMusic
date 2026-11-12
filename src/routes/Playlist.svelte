@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, coverUrl, fmtCount, type PlaylistDetail } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -62,7 +63,7 @@
   {:else if loading}
     <!-- 等骨架屏延迟 -->
   {:else if err}
-    <div class="err">{err}</div>
+    <ErrorNotice text={err} />
     <div class="note">
       若提示不可见，可能是私密歌单或已被删除。酷我的账号歌单需要登录后才能列出，
       本客户端目前只支持公开歌单。

@@ -153,6 +153,18 @@ export interface S3IntegrityReport {
   issues: S3IntegrityIssue[];
 }
 
+/** 补齐过程中逐条回传的进度 */
+export interface S3FixProgress {
+  id: string;
+  status: 'running' | 'done' | 'failed' | (string & {});
+  /** 这次之后仍然缺的部分；done 时为空 */
+  missing: FailedPartName[];
+  error: string;
+  /** 已处理数量；running 时是当前项的序号 */
+  done: number;
+  total: number;
+}
+
 /** 下载里失败的一个部分 */
 export type FailedPartName = 'audio' | 'lyrics' | 'cover' | (string & {});
 
@@ -443,9 +455,9 @@ export const api = {
   s3IntegrityFix: (
     playlist: string | null,
     ids: string[],
-    onProgress: (p: Progress) => void
+    onProgress: (p: S3FixProgress) => void
   ) => {
-    const ch = new Channel<Progress>();
+    const ch = new Channel<S3FixProgress>();
     ch.onmessage = onProgress;
     return invoke<S3IntegrityReport>('s3_integrity_fix', {
       playlist,

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { onDestroy, onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -259,7 +260,7 @@
   {/if}
 
   {#if searchState.err}
-    <div class="err">{searchState.err}</div>
+    <ErrorNotice text={searchState.err} />
   {/if}
 
   {#if skel.visible}

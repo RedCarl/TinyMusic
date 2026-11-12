@@ -7,6 +7,7 @@
     clearFinishedImports,
   } from '../lib/importQueue.svelte';
   import ProgressBar from './ProgressBar.svelte';
+  import ErrorNotice from './ErrorNotice.svelte';
 
   const queuedCount = $derived(
     importQueue.tasks.filter((t) => t.status === 'queued').length
@@ -49,7 +50,7 @@
                 已导入 {t.uploaded} 首{#if t.failed}，{t.failed} 首失败{/if}
               </div>
             {:else}
-              <div class="impq-sub bad">{t.error || '导入失败'}</div>
+              <ErrorNotice text={t.error || '导入失败'} compact />
             {/if}
           </div>
 

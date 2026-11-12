@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import {
     api,
@@ -189,7 +190,8 @@
     </div>
   {:else if !loading}
     {#if err}
-      <div class="muted">歌词获取失败（详情接口易限流，不影响播放）：{err}</div>
+      <div class="muted">歌词获取失败（详情接口易限流，不影响播放）</div>
+      <ErrorNotice text={err} compact />
     {:else if detail && detail.lyrics.length}
       <div class="lyrics">
         {#each detail.lyrics as l}

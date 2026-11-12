@@ -3285,6 +3285,20 @@ pub struct S3IntegrityReport {
     pub issues: Vec<S3IntegrityIssue>,
 }
 
+/// 补齐过程中逐步推给前端的进度：让列表能实时显示「正在补哪一个 / 谁好了 / 谁失败」
+#[derive(Debug, Clone, Serialize)]
+pub struct S3FixProgress {
+    pub id: String,
+    /// `running` / `done` / `failed`
+    pub status: String,
+    /// 这次之后仍然缺的部分；`done` 时为空
+    pub missing: Vec<String>,
+    pub error: String,
+    /// 已处理数量（running 时是当前项的序号，done/failed 时含本项）
+    pub done: u32,
+    pub total: u32,
+}
+
 struct S3SourceIndex {
     by_key: HashMap<String, Track>,
     by_stem: HashMap<String, Track>,
@@ -3507,87 +3521,128 @@ async fn s3_integrity_fix(
     state: State<'_, AppState>,
     playlist: Option<String>,
     ids: Vec<String>,
-    on_progress: Channel<Progress>,
+    on_progress: Channel<S3FixProgress>,
 ) -> Result<S3IntegrityReport, String> {
     let s3 = s3_client(&state)?;
     let report = check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await?;
     let sources = s3_source_index(&state.storage, s3.config().bucket.trim());
     let settings = state.settings_snapshot();
     let q = Quality::from_str(&settings.default_quality);
+    let total = ids.len() as u32;
 
-    let total = ids.len() as u64;
-    for (done, id) in ids.iter().enumerate() {
-        let _ = on_progress.send(Progress {
-            task_id: id.clone(),
-            downloaded: done as u64,
-            total: Some(total),
+    for (i, id) in ids.iter().enumerate() {
+        let Some(issue) = report.issues.iter().find(|x| &x.id == id) else {
+            // 列表过期了（比如刚被别的设备补过）：当作已完成
+            let _ = on_progress.send(S3FixProgress {
+                id: id.clone(),
+                status: "done".into(),
+                missing: Vec::new(),
+                error: String::new(),
+                done: i as u32 + 1,
+                total,
+            });
+            continue;
+        };
+        let _ = on_progress.send(S3FixProgress {
+            id: id.clone(),
+            status: "running".into(),
+            missing: issue.missing.clone(),
+            error: String::new(),
+            done: i as u32,
+            total,
         });
-        let Some(issue) = report.issues.iter().find(|i| &i.id == id) else {
-            continue;
-        };
-        let source = if issue.key.is_empty() {
-            sources.by_stem.get(&issue.stem)
-        } else {
-            sources.by_key.get(&issue.key)
-        };
-        let Some(source) = source.cloned() else {
-            continue;
-        };
-        let provider = match state.provider(&source.provider) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let mut track = source;
-        let has_cover = track
-            .cover
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|u| !u.is_empty());
-        if issue.missing.iter().any(|p| p == "cover") && !has_cover {
-            if let Some(cover) = lookup_cover(&state, &track).await {
-                track.cover = Some(cover);
-            }
-        }
 
-        if issue.missing.iter().any(|p| p == "audio") {
-            let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
-            let task_id = format!("fx{}-{}", seq, track.id);
-            let _ = upload_one_s3(
-                state.http.clone(),
-                state.storage.clone(),
-                state.downloader.clone(),
-                provider,
-                s3.clone(),
-                track,
-                q,
-                issue.playlist.clone(),
-                task_id,
-                None,
-            )
-            .await;
-        } else {
-            let parts: Vec<FailedPart> = issue
-                .missing
-                .iter()
-                .filter(|p| p.as_str() != "audio")
-                .map(|p| FailedPart {
-                    part: p.clone(),
-                    error: "网盘里缺失".into(),
-                })
-                .collect();
-            let _ = repair_s3_extras(
-                state.http.clone(),
-                provider,
-                &s3,
-                &track,
-                &issue.key,
-                &parts,
-            )
-            .await;
+        let (missing, error) =
+            fix_integrity_issue(&state, &s3, &sources, issue, q).await;
+        let _ = on_progress.send(S3FixProgress {
+            id: id.clone(),
+            status: if missing.is_empty() { "done" } else { "failed" }.into(),
+            missing,
+            error,
+            done: i as u32 + 1,
+            total,
+        });
+    }
+
+    // 以重新扫描的结果为准（补齐中途失败 / 上传了但服务端仍看不到的都以它为准）
+    check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await
+}
+
+/// 补一条：缺音频就整首重传，只缺歌词/封面就补对象。
+/// 返回（仍然缺的部分, 错误说明）。
+async fn fix_integrity_issue(
+    state: &AppState,
+    s3: &S3,
+    sources: &S3SourceIndex,
+    issue: &S3IntegrityIssue,
+    q: Quality,
+) -> (Vec<String>, String) {
+    let source = if issue.key.is_empty() {
+        sources.by_stem.get(&issue.stem)
+    } else {
+        sources.by_key.get(&issue.key)
+    };
+    let Some(source) = source.cloned() else {
+        return (issue.missing.clone(), "找不到来源平台信息".into());
+    };
+    let provider = match state.provider(&source.provider) {
+        Ok(p) => p,
+        Err(e) => return (issue.missing.clone(), e),
+    };
+    let mut track = source;
+    let has_cover = track
+        .cover
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|u| !u.is_empty());
+    if issue.missing.iter().any(|p| p == "cover") && !has_cover {
+        if let Some(cover) = lookup_cover(state, &track).await {
+            track.cover = Some(cover);
         }
     }
 
-    check_s3_integrity(&state.storage, &s3, playlist.as_deref()).await
+    if issue.missing.iter().any(|p| p == "audio") {
+        let seq = state.task_seq.fetch_add(1, Ordering::Relaxed);
+        let task_id = format!("fx{}-{}", seq, track.id);
+        let outcome = upload_one_s3(
+            state.http.clone(),
+            state.storage.clone(),
+            state.downloader.clone(),
+            provider,
+            s3.clone(),
+            track,
+            q,
+            issue.playlist.clone(),
+            task_id,
+            None,
+        )
+        .await;
+        return match outcome.failure {
+            None => (Vec::new(), String::new()),
+            Some(f) => (
+                f.parts.iter().map(|p| p.part.clone()).collect(),
+                f.parts
+                    .first()
+                    .map(|p| p.error.clone())
+                    .unwrap_or_default(),
+            ),
+        };
+    }
+
+    let parts: Vec<FailedPart> = issue
+        .missing
+        .iter()
+        .filter(|p| p.as_str() != "audio")
+        .map(|p| FailedPart {
+            part: p.clone(),
+            error: "网盘里缺失".into(),
+        })
+        .collect();
+    let left = repair_s3_extras(state.http.clone(), provider, s3, &track, &issue.key, &parts).await;
+    (
+        left.iter().map(|p| p.part.clone()).collect(),
+        left.first().map(|p| p.error.clone()).unwrap_or_default(),
+    )
 }
 
 // ---------- 歌单一键导入网盘 ----------

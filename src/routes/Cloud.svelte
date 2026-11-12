@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type S3PlaylistInfo, type S3TrackRow } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -11,7 +11,8 @@
   import CloudSkeleton from '../components/CloudSkeleton.svelte';
   import MorphIcon from '../components/MorphIcon.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
-  import { openIntegrity } from '../lib/s3Integrity.svelte';
+  import { openIntegrity, integrityUi } from '../lib/s3Integrity.svelte';
+  import ErrorNotice from '../components/ErrorNotice.svelte';
 
   let lists = $state<S3PlaylistInfo[]>([]);
   let rows = $state<S3TrackRow[]>([]);
@@ -146,6 +147,22 @@
     return list.map((p) => PART_LABEL[p] ?? p).join('、');
   }
   const missingCount = $derived(rows.filter((r) => (r.missing?.length ?? 0) > 0).length);
+
+  /** 补齐结束后静默刷新当前歌单，让角标 / 封面立刻跟上 */
+  $effect(() => {
+    const at = integrityUi.finishedAt;
+    if (!at) return;
+    untrack(() => {
+      if (current) {
+        api
+          .s3PlaylistTracks(current)
+          .then((next) => (rows = next))
+          .catch(() => {});
+      } else {
+        void loadList();
+      }
+    });
+  });
 
   function canManage(name: string) {
     return name !== FAVORITES;
@@ -310,7 +327,7 @@
       </div>
     </div>
 
-    {#if err}<div class="err">{err}</div>{/if}
+    {#if err}<ErrorNotice text={err} />{/if}
 
     {#if listSkel.visible}
       <CloudSkeleton mode="list" />
@@ -443,7 +460,7 @@
       </div>
     </div>
 
-    {#if err}<div class="err">{err}</div>{/if}
+    {#if err}<ErrorNotice text={err} />{/if}
 
     {#if detailSkel.visible}
       <CloudSkeleton mode="detail" rows={6} />
@@ -544,7 +561,7 @@
         />
       {/if}
 
-      {#if dialogErr}<div class="err small">{dialogErr}</div>{/if}
+      {#if dialogErr}<ErrorNotice text={dialogErr} compact />{/if}
 
       <div class="modal-actions">
         <button class="mini" onclick={closeDialog} disabled={dialogBusy}>取消</button>

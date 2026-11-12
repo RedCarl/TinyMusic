@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, coverUrl, type AlbumPage } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
@@ -60,6 +61,6 @@
       {/each}
     </div>
   {:else if err}
-    <div class="err">{err}</div>
+    <ErrorNotice text={err} />
   {/if}
 </div>

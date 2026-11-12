@@ -10,6 +10,7 @@
     dismissFailure,
     dismissAllFailures,
   } from '../lib/downloadFailures.svelte';
+  import ErrorNotice from './ErrorNotice.svelte';
 
   const items = $derived(failureUi.items);
   const busy = $derived(anyBusy());
@@ -90,7 +91,7 @@
                 {/if}
               </div>
               {#if firstError(f)}
-                <div class="fail-err" title={firstError(f)}>{firstError(f)}</div>
+                <ErrorNotice text={firstError(f)} compact />
               {/if}
             </div>
 
@@ -116,7 +117,7 @@
       </div>
 
       {#if failureUi.error}
-        <div class="err small fail-msg">{failureUi.error}</div>
+        <div class="fail-msg"><ErrorNotice text={failureUi.error} compact /></div>
       {:else if busy}
         <div class="ok small fail-msg">正在重试，失败的部分会在这里更新…</div>
       {/if}
@@ -233,15 +234,6 @@
     max-width: 46%;
     color: var(--fg3);
     font-size: 10.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .fail-err {
-    margin-top: 4px;
-    overflow: hidden;
-    color: var(--fg3);
-    font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

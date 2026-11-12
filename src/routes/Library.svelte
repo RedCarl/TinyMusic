@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type Track } from '../lib/api';
@@ -41,7 +42,7 @@
 </script>
 
 <div class="page">
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<ErrorNotice text={err} />{/if}
 
   {#if skel.visible}
     <TrackListSkeleton rows={6} toolbar="library" />

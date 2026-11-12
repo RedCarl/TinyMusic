@@ -11,6 +11,7 @@
   import TrackRow from '../components/TrackRow.svelte';
   import TrackListSkeleton from '../components/TrackListSkeleton.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
+  import ErrorNotice from '../components/ErrorNotice.svelte';
 
   let logged = $derived(!!account.netease.uid);
 
@@ -187,7 +188,7 @@
   {:else if skel.visible}
     <TrackListSkeleton rows={5} toolbar="none" />
   {:else}
-    {#if err}<div class="err">{err}</div>{/if}
+    {#if err}<ErrorNotice text={err} />{/if}
 
     <!-- 1) 每日推荐：左边大卡片（点进详情），右边只铺前 5 首 -->
     {#if songs.length > 0}

@@ -11,6 +11,7 @@
     runS3,
   } from '../lib/download.svelte';
   import ProgressBar from './ProgressBar.svelte';
+  import ErrorNotice from './ErrorNotice.svelte';
 
   const count = $derived(downloadUi.targets.length);
   const preview = $derived(downloadUi.targets.slice(0, 4));
@@ -137,7 +138,7 @@
         />
       {/if}
       {#if downloadUi.doneMsg}<div class="ok small">{downloadUi.doneMsg}</div>{/if}
-      {#if downloadUi.err}<div class="err small">{downloadUi.err}</div>{/if}
+      {#if downloadUi.err}<ErrorNotice text={downloadUi.err} compact />{/if}
 
       <div class="modal-actions">
         <button class="mini" onclick={close} disabled={downloadUi.busy}>取消</button>

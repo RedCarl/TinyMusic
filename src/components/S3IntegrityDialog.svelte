@@ -2,6 +2,7 @@
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { icons, ICON_SIZE } from '../lib/icons';
   import type { S3IntegrityIssue } from '../lib/api';
+  import ProgressBar from './ProgressBar.svelte';
   import {
     integrityUi,
     integrityBusy,
@@ -9,12 +10,24 @@
     closeIntegrity,
     runIntegrityCheck,
     fixIntegrity,
+    issueStatus,
+    issueError,
   } from '../lib/s3Integrity.svelte';
+  import ErrorNotice from './ErrorNotice.svelte';
 
   const issues = $derived(integrityUi.issues);
+  const fixed = $derived(integrityUi.fixed);
   const busy = $derived(integrityBusy());
   const scope = $derived(integrityUi.playlist || '全部歌单');
   const fixable = $derived(fixableIssues().length);
+  const failedCount = $derived(
+    issues.filter((i) => issueStatus(i.id) === 'failed').length
+  );
+  const rechecking = $derived(
+    integrityUi.runActive &&
+      integrityUi.runTotal > 0 &&
+      integrityUi.runDone >= integrityUi.runTotal
+  );
 
   const PART_LABEL: Record<string, string> = {
     audio: '音频',
@@ -26,12 +39,32 @@
     return PART_LABEL[part] ?? part;
   }
 
-  function isBusy(issue: S3IntegrityIssue): boolean {
-    return integrityUi.busy.includes(issue.id);
-  }
-
   function displayTitle(issue: S3IntegrityIssue): string {
     return issue.title || issue.stem.split('/').pop() || '未命名';
+  }
+
+  function actionLabel(issue: S3IntegrityIssue): string {
+    switch (issueStatus(issue.id)) {
+      case 'running':
+        return '补齐中…';
+      case 'waiting':
+        return busy ? '等待中' : '补齐';
+      case 'failed':
+        return '重试';
+      default:
+        return '补齐';
+    }
+  }
+
+  function actionDisabled(issue: S3IntegrityIssue): boolean {
+    const st = issueStatus(issue.id);
+    return busy || !issue.can_fix || st === 'running' || (st === 'waiting' && busy);
+  }
+
+  function progressLabel(): string {
+    if (rechecking) return '正在重新检查…';
+    const current = Math.min(integrityUi.runDone + 1, integrityUi.runTotal);
+    return `正在补齐 ${current} / ${integrityUi.runTotal}`;
   }
 
   function close() {
@@ -66,7 +99,7 @@
       </div>
 
       {#if integrityUi.error}
-        <div class="err small pad">{integrityUi.error}</div>
+        <div class="pad"><ErrorNotice text={integrityUi.error} compact /></div>
       {/if}
 
       {#if integrityUi.loading}
@@ -74,7 +107,7 @@
           <HugeiconsIcon icon={icons.loading} size={ICON_SIZE.inline} />
           正在扫描网盘…
         </div>
-      {:else if issues.length === 0}
+      {:else if issues.length === 0 && fixed.length === 0}
         <div class="pad empty">
           <span class="empty-ico">
             <HugeiconsIcon icon={icons.shield} size={ICON_SIZE.control} />
@@ -89,53 +122,103 @@
       {:else}
         <div class="summary">
           已检查 {integrityUi.checked} 首，<b>{issues.length}</b> 首缺内容
-          {#if fixable < issues.length}
-            <span class="nofix-note">（{issues.length - fixable} 首找不到来源，无法补齐）</span>
+          {#if fixed.length > 0}
+            <span class="fixed-note">· 已补齐 {fixed.length} 首</span>
+          {/if}
+          {#if failedCount > 0}
+            <span class="failed-note">· {failedCount} 首补齐失败</span>
           {/if}
         </div>
 
-        <div class="issue-list">
-          {#each issues as issue (issue.id)}
-            <div class="issue-row" class:busy={isBusy(issue)}>
-              <div class="issue-main">
-                <div class="issue-title">
-                  <span class="it" title={displayTitle(issue)}>{displayTitle(issue)}</span>
-                  {#if issue.artist}<span class="ia">{issue.artist}</span>{/if}
-                  {#if issue.playlist}
-                    <span class="ttag" title={issue.playlist}>{issue.playlist}</span>
-                  {/if}
-                </div>
-                <div class="issue-parts">
-                  {#each issue.missing as part}
-                    <span class="part" class:audio={part === 'audio'}>
-                      {partLabel(part)}缺失
-                    </span>
-                  {/each}
-                  {#if !issue.can_fix}
-                    <span class="nofix" title="没有这台机器的上传记录，找不到原平台信息">
-                      无来源
-                    </span>
-                  {/if}
-                </div>
-              </div>
-              <button
-                class="mini primary"
-                onclick={() => fixIntegrity([issue.id])}
-                disabled={busy || !issue.can_fix}
-              >
-                {isBusy(issue) ? '补齐中…' : '补齐'}
-              </button>
-            </div>
-          {/each}
-        </div>
-      {/if}
+        {#if busy}
+          <ProgressBar
+            value={rechecking
+              ? null
+              : integrityUi.runTotal > 0
+                ? integrityUi.runDone / integrityUi.runTotal
+                : null}
+            label={progressLabel()}
+          />
+        {/if}
 
-      {#if busy}
-        <div class="pad note">
-          正在补齐{integrityUi.total > 0
-            ? ` ${integrityUi.done} / ${integrityUi.total}`
-            : ''}，完成后会自动重新检查…
-        </div>
+        {#if fixed.length > 0}
+          <div class="block-title ok">已补齐</div>
+          <div class="issue-list fixed-list">
+            {#each fixed as issue (issue.id)}
+              <div class="issue-row done">
+                <div class="issue-main">
+                  <div class="issue-title">
+                    <span class="it" title={displayTitle(issue)}>{displayTitle(issue)}</span>
+                    {#if issue.artist}<span class="ia">{issue.artist}</span>{/if}
+                    {#if issue.playlist}
+                      <span class="ttag" title={issue.playlist}>{issue.playlist}</span>
+                    {/if}
+                  </div>
+                  <div class="issue-parts">
+                    {#each issue.missing as part}
+                      <span class="part done">{partLabel(part)}</span>
+                    {/each}
+                  </div>
+                </div>
+                <span class="state-chip ok">已补齐</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if issues.length > 0}
+          <div class="block-title">待补齐</div>
+          <div class="issue-list">
+            {#each issues as issue (issue.id)}
+              {@const st = issueStatus(issue.id)}
+              <div
+                class="issue-row"
+                class:running={st === 'running'}
+                class:waiting={st === 'waiting'}
+                class:failed={st === 'failed'}
+              >
+                <div class="issue-main">
+                  <div class="issue-title">
+                    <span class="it" title={displayTitle(issue)}>{displayTitle(issue)}</span>
+                    {#if issue.artist}<span class="ia">{issue.artist}</span>{/if}
+                    {#if issue.playlist}
+                      <span class="ttag" title={issue.playlist}>{issue.playlist}</span>
+                    {/if}
+                  </div>
+                  <div class="issue-parts">
+                    {#each issue.missing as part}
+                      <span class="part" class:audio={part === 'audio'}>
+                        {partLabel(part)}缺失
+                      </span>
+                    {/each}
+                    {#if st === 'running'}
+                      <span class="state-chip run">正在补齐</span>
+                    {:else if st === 'waiting' && busy}
+                      <span class="state-chip wait">等待中</span>
+                    {:else if st === 'failed'}
+                      <span class="state-chip fail">失败</span>
+                    {/if}
+                    {#if !issue.can_fix}
+                      <span class="nofix" title="没有这台机器的上传记录，找不到原平台信息">
+                        无来源
+                      </span>
+                    {/if}
+                  </div>
+                  {#if st === 'failed' && issueError(issue.id)}
+                    <ErrorNotice text={issueError(issue.id)} compact />
+                  {/if}
+                </div>
+                <button
+                  class="mini primary"
+                  onclick={() => fixIntegrity([issue.id])}
+                  disabled={actionDisabled(issue)}
+                >
+                  {actionLabel(issue)}
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {/if}
 
       <div class="modal-actions">
@@ -171,11 +254,6 @@
     gap: 8px;
     color: var(--fg2);
     font-size: 13px;
-  }
-
-  .note {
-    color: var(--fg3);
-    font-size: 11.5px;
   }
 
   .empty {
@@ -223,19 +301,38 @@
     font-weight: 600;
   }
 
-  .nofix-note {
+  .fixed-note {
+    color: var(--success);
+  }
+
+  .failed-note {
+    color: var(--danger);
+  }
+
+  .block-title {
+    padding: 14px 18px 0;
     color: var(--fg3);
     font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .block-title.ok {
+    color: var(--success);
   }
 
   .issue-list {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 46vh;
-    margin-top: 10px;
+    max-height: 34vh;
+    margin-top: 8px;
     padding: 0 18px;
     overflow: auto;
+  }
+
+  .fixed-list {
+    max-height: 22vh;
   }
 
   .issue-row {
@@ -246,11 +343,29 @@
     border-radius: var(--r-sm);
     background-color: var(--bg2);
     box-shadow: var(--pane-shadow);
-    transition: opacity 160ms ease-out;
+    transition:
+      opacity 160ms ease-out,
+      box-shadow 160ms ease-out;
   }
 
-  .issue-row.busy {
+  .issue-row.done {
+    opacity: 0.75;
+  }
+
+  .issue-row.waiting {
     opacity: 0.6;
+  }
+
+  .issue-row.running {
+    box-shadow:
+      var(--pane-shadow),
+      inset 0 0 0 1px var(--glass-state-rim);
+  }
+
+  .issue-row.failed {
+    box-shadow:
+      var(--pane-shadow),
+      inset 0 0 0 1px color-mix(in oklch, var(--danger) 30%, transparent);
   }
 
   .issue-main {
@@ -315,8 +430,42 @@
     color: var(--danger);
   }
 
+  .part.done {
+    background-color: var(--ok-bg);
+    box-shadow: inset 0 0 0 1px var(--ok-border);
+    color: var(--success);
+  }
+
+  .state-chip {
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+  }
+
+  .state-chip.ok {
+    background-color: var(--ok-bg);
+    box-shadow: inset 0 0 0 1px var(--ok-border);
+    color: var(--success);
+  }
+
+  .state-chip.run {
+    background-color: var(--glass-state);
+    color: var(--fg2);
+  }
+
+  .state-chip.wait {
+    color: var(--fg3);
+  }
+
+  .state-chip.fail {
+    background-color: color-mix(in oklch, var(--danger) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--danger) 26%, transparent);
+    color: var(--danger);
+  }
+
   .nofix {
     color: var(--fg3);
     font-size: 10.5px;
   }
+
 </style>

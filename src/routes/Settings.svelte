@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ErrorNotice from '../components/ErrorNotice.svelte';
   import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type Settings, type Quality, type QualityCapability } from '../lib/api';
@@ -207,7 +208,7 @@
     {#if savedHint}<span class="st-saved">已保存</span>{/if}
   </div>
 
-  {#if err}<div class="st-error">{err}</div>{/if}
+  {#if err}<ErrorNotice text={err} />{/if}
 
   <section class="st-section">
     <div class="st-section-title">外观</div>
@@ -469,10 +470,10 @@
             </button>
           </div>
 
-          {#if s3Msg || s3Err}
-            <div class="st-status" class:bad={!!s3Err}>
-              {s3Err || s3Msg}
-            </div>
+          {#if s3Err}
+            <ErrorNotice text={s3Err} compact />
+          {:else if s3Msg}
+            <div class="st-status">{s3Msg}</div>
           {/if}
         </div>
       {/if}
@@ -508,9 +509,7 @@
       {#if updBusy && pending}
         <div class="st-status"><ProgressBar value={progress / 100} label="正在下载更新…" /></div>
       {/if}
-      {#if updErr}
-        <div class="st-status bad">{updErr}</div>
-      {/if}
+      {#if updErr}<ErrorNotice text={updErr} compact />{/if}
     </div>
   </section>
 </div>
@@ -534,12 +533,6 @@
 
   .st-saved {
     color: var(--success);
-    font-size: 12px;
-  }
-
-  .st-error {
-    margin: 4px 0 12px;
-    color: var(--danger);
     font-size: 12px;
   }
 

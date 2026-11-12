@@ -28,6 +28,7 @@
   import { requestDownload, isPending } from '../lib/download.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { go } from '../lib/router.svelte';
+  import { copyText } from '../lib/toast.svelte';
   import QueuePanel from './QueuePanel.svelte';
 
   const pending = $derived(player.current ? isPending(player.current) : false);
@@ -325,9 +326,16 @@
       </div>
       <div class="a">
         {#if player.error}
-          <span class="err">{player.error.includes('会员') || player.error.includes('unavailable')
-            ? '需要会员，未登录不可用'
-            : player.error}</span>
+          <button
+            type="button"
+            class="err err-link"
+            title={`${player.error}（点击复制）`}
+            onclick={() => copyText(player.error, '已复制错误信息')}
+          >
+            {player.error.includes('会员') || player.error.includes('unavailable')
+              ? '需要会员，未登录不可用'
+              : player.error}
+          </button>
         {:else if player.status === 'loading'}
           正在取流…
         {:else}
@@ -441,3 +449,23 @@
   </div>
 </div>
 {/if}
+
+<style>
+  /* 播放条上的报错是单行，放不下复制按钮：点一下就把原始报错复制走 */
+  .err-link {
+    display: block;
+    max-width: 100%;
+    padding: 0;
+    overflow: hidden;
+    color: var(--warn);
+    font-size: 11px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: copy;
+  }
+
+  .err-link:hover {
+    text-decoration: underline dotted;
+  }
+</style>

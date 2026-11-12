@@ -56,6 +56,7 @@ import {
   HeadphonesIcon,
   PreferenceVerticalIcon,
   ShieldCheckIcon,
+  Copy01Icon,
 } from '@hugeicons/core-free-icons';
 
 export const icons = {
@@ -110,6 +111,8 @@ export const icons = {
   equalizer: PreferenceVerticalIcon,
   /** 网盘完整性检测 */
   shield: ShieldCheckIcon,
+  /** 复制错误信息 */
+  copy: Copy01Icon,
 } as const;
 
 /** 尺寸三档，避免各处随意取值 */
