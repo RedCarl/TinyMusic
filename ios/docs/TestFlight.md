@@ -4,6 +4,7 @@
 
 ## 当前状态：已上传并可内部测试
 
+- **Build 33** 已上传 TestFlight，版本 `1.0.1 (33)`（2026-11-20 16:02，`Upload succeeded` / `EXPORT SUCCEEDED`），含新图标；等 Apple 处理成 VALID。
 - **Build 32** 已上传 TestFlight，版本 `1.0.0 (32)`，处理状态 **VALID**（2026-11-19 14:00 上传完成），内含 iOS 性能审计的 11 项修复（见文末）。
 - **Build 30** 仍可作为回退项：版本 `1.0.0 (30)`，处理状态 **VALID**，内部测试 **IN_BETA_TESTING**。
 - 包含 **iCloud entitlement**、缓存/喜欢修复、歌单播放、播放列表面板、首启 S3 提醒和离线缓存歌单、封面加载修复、歌单播放状态、歌词页滑动返回、播放页排版、中英双语与独立语言选择页。
@@ -58,7 +59,7 @@
 
 - TestFlight 内部测试员必须是 App Store Connect 用户；外部测试员不需要，但要 Beta App Review。
 - 新增测试员：App Store Connect → 用户和访问 添加用户，再到 TestFlight 群组里勾选。
-- 构建 17–29 是旧包，仍在群组里；测试请选 **30**。
+- 构建 17–32 是旧包，仍在群组里；测试请选 **33**。
 
 ## 构建 29（2026-11-18 17:34）
 
@@ -73,6 +74,12 @@
 - 语言：设置 → 语言为独立选择页，切换立即生效并停留在本页；标签栏、导航栏和日期格式跟随界面语言。
 - S3：`S3 网盘` 行最右侧新增「断开」按钮，只有连接正常（绿点：地址/桶/密钥齐全且最近保存或测试无报错）时才显示；断开后按钮自动消失，底部独立断开区块已移除。
 - 构建：`./scripts/build.sh` 成功，`TinyMusicTests` 29 项全过。
+
+## 构建 33（2026-11-20 16:02）
+
+- 版本：**1.0.1 (33)**，`MARKETING_VERSION` 1.0.0 → 1.0.1，`BUILD_NUMBER=33 ./scripts/testflight.sh` 归档并上传成功（`Upload succeeded` / `EXPORT SUCCEEDED`）。
+- 改动：换用新 Logo —— `ios/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`（1024×1024、RGB 无 alpha），桌面端 `desktop/src-tauri/icons/` 同步换成同一套。
+- 坑：1.0.0 已审核通过后再传 1.0.0 的构建，ASC 会报 `Invalid Pre-Release Train. The train version '1.0.0' is closed`；必须抬 `CFBundleShortVersionString`。
 
 ## 构建 32（2026-11-19 14:00）
 
