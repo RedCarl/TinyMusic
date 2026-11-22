@@ -149,6 +149,15 @@ export interface S3IntegrityIssue {
   can_fix: boolean;
 }
 
+/** 「喜欢」目录里跟别的歌单重复的副本（桌面端手动清理用） */
+export interface FavoriteDuplicate {
+  /** 保留的那份：歌单里的原文件 */
+  canonical: string;
+  /** 「喜欢」目录里可以删的那份 */
+  duplicate: string;
+  bytes: number;
+}
+
 export interface S3IntegrityReport {
   checked: number;
   issues: S3IntegrityIssue[];

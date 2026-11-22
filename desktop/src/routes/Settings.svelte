@@ -1,5 +1,6 @@
 <script lang="ts">
   import ErrorNotice from '../components/ErrorNotice.svelte';
+  import FavoritesDedupeDialog from '../components/FavoritesDedupeDialog.svelte';
   import { onMount } from 'svelte';
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import { api, type Settings, type Quality, type QualityCapability } from '../lib/api';
@@ -166,6 +167,7 @@
   let s3Msg = $state('');
   let s3Err = $state('');
   let s3Busy = $state(false);
+  let dedupeOpen = $state(false);
 
   async function testS3() {
     s3Busy = true;
@@ -549,6 +551,18 @@
           {:else if s3Msg}
             <div class="st-status">{s3Msg}</div>
           {/if}
+
+          <div class="st-row">
+            <div class="st-label">
+              {t('喜欢里的重复副本')}
+              <span class="st-desc">
+                {t('同一首歌已经在别的歌单里时，可以只留歌单那份，删掉「喜欢」目录里的副本')}
+              </span>
+            </div>
+            <button class="st-btn" onclick={() => (dedupeOpen = true)} disabled={!s.s3_enabled}>
+              {t('检查和清理')}
+            </button>
+          </div>
         </div>
       {/if}
     </div>
@@ -594,6 +608,8 @@
       {#if updErr}<ErrorNotice text={updErr} compact />{/if}
     </div>
   </section>
+
+  <FavoritesDedupeDialog bind:open={dedupeOpen} />
 </div>
 
 <style>

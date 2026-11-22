@@ -111,5 +111,19 @@ export const shell: Record<string, string> = {
   '下载并安装': 'Download and install',
   '检查中…': 'Checking…',
   '检查更新': 'Check for updates',
-  '正在下载更新…': 'Downloading update…'
+  '正在下载更新…': 'Downloading update…',
+  '喜欢里的重复副本': 'Duplicate Favorites copies',
+  '同一首歌已经在别的歌单里时，可以只留歌单那份，删掉「喜欢」目录里的副本':
+    'When the song already lives in a playlist, keep that copy and drop the duplicate in Favorites',
+  '检查和清理': 'Check and clean',
+  '清理喜欢重复副本': 'Clean duplicate Favorites copies',
+  '只删「喜欢」目录里那份，歌单里的原文件不动':
+    'Only the Favorites copy is deleted; the playlist file stays',
+  '没有发现重复副本': 'No duplicate copies found',
+  '还没有扫描': 'Not scanned yet',
+  '同一首歌在歌单和「喜欢」目录各有一份时，才能清掉多出来的那份':
+    'A copy can only be removed when the same song also exists in a playlist',
+  '共 {n} 项，占用 {size}': '{n} items, {size}',
+  '删除选中': 'Delete selected',
+  '已清理 {n} 项，释放 {size}': 'Removed {n} items, freed {size}'
 };

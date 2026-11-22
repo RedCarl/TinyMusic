@@ -63,7 +63,7 @@
         <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.empty} />
       </div>
       <p>{t('还没有喜欢的歌曲')}</p>
-      <p class="muted small">{t('点歌曲右边的红心，会自动收藏并下载到网盘')}</p>
+      <p class="muted small">{t('点歌曲右边的红心，收藏会同步到网盘（网盘里已有的歌不再复制一份）')}</p>
     </div>
   {:else}
     <BatchBar {tracks} />

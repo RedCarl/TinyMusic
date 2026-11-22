@@ -17,7 +17,7 @@
 
 ## 铁律
 
-1. **一个 bug 只修一处**：S3 解析/签名/收藏（「喜欢」目录就是收藏本体）在 `desktop/crates/core::library`；桌面业务规则在 `desktop/crates/app` 或 `desktop/packages/shared`；iOS 队列规则在 `PlaybackQueue.swift`。不要在 iOS 再写一套 S3 解析。
+1. **一个 bug 只修一处**：S3 解析/签名在 `desktop/crates/core::library`，收藏（`favorites.json` 清单是收藏本体，「喜欢」目录只兜底存网盘里没有的歌）在 `desktop/crates/core::favorites`；桌面业务规则在 `desktop/crates/app` 或 `desktop/packages/shared`；iOS 队列规则在 `PlaybackQueue.swift`。不要在 iOS 再写一套 S3 解析。
    - `packages/shared` 只放框架无关代码：不要 import svelte 或 SwiftUI。
    - 平台差异用注入解决（S3 client、播放引擎、KV），不要用 `if (isMobile)` 散在主逻辑里。
 2. **桌面端行为锁定**：改 desktop 内部接线可以，UI/交互/文案不能变。改完跑 `desktop/docs/桌面回归清单.md`。

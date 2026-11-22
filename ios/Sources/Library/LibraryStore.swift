@@ -110,7 +110,7 @@ final class LibraryStore {
                 "title": .string(track.title),
                 "artist": .string(track.artist),
             ])
-            // 收藏就是网盘「喜欢」目录里那份副本；没复制成功就不算收藏，
+            // 收藏写进网盘 favorites.json；写不进去就不算收藏，
             // 否则下次拉取会把本地这条抹掉，喜欢里凭空少一首歌。
             guard result.synced else {
                 let reason = (result.error?.isEmpty == false ? result.error! : L("收藏失败：没写进网盘"))

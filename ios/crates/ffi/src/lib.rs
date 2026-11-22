@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use tinymusic_core::favorites;
 use tinymusic_core::http::HttpClient;
 use tinymusic_core::library::{self, S3TrackRow};
 use tinymusic_core::model::{Availability, Track};
@@ -393,7 +394,7 @@ async fn dispatch(state: &IosState, cmd: &str, args: Value) -> Result<Value, Str
                 Ok(serde_json::to_value(list).map_err(|e| e.to_string())?)
             };
             match state.client() {
-                Ok(client) => match library::pull_favorites(&client, &state.storage).await {
+                Ok(client) => match favorites::pull(&client, &state.storage).await {
                     Ok(list) => Ok(serde_json::to_value(list).map_err(|e| e.to_string())?),
                     Err(_) => fallback(),
                 },
@@ -412,38 +413,26 @@ async fn dispatch(state: &IosState, cmd: &str, args: Value) -> Result<Value, Str
                 availability: Availability::Available,
                 ..Track::default()
             };
-            // 收藏 = 在网盘「喜欢」目录里放一份副本。复制不成功就不算收藏（否则刷新后又会没了）。
+            // 收藏 = 写网盘 favorites.json。桶里已经有这首歌就只写一条清单，
+            // 「喜欢」目录只在网盘里没有这首歌时才存兜底副本（iOS 只收藏桶里的歌）。
             let client = state.client()?;
-            let mut key = Value::Null;
-            let (synced, error) =
-                match library::copy_into_favorites(&client, &track.id).await {
-                    Ok(target) => {
-                        let mut copy = track.clone();
-                        copy.id = target.clone();
-                        copy.cover = None;
-                        state
-                            .storage
-                            .add_favorite(&copy)
-                            .map_err(|e| e.to_string())?;
-                        let _ = state.storage.save_s3_playlist(library::FAVORITES_PLAYLIST);
-                        // 副本的 key 跟歌单里的原始 key 不同，前端要拿它当收藏 id
-                        key = json!(target);
-                        (true, Value::Null)
-                    }
-                    Err(e) => (false, json!(e)),
-                };
+            let (synced, error, key) = match favorites::add(&client, &state.storage, &track).await {
+                Ok(favorites::FavoriteAdd::Added { key }) => (true, Value::Null, json!(key)),
+                Ok(favorites::FavoriteAdd::NeedsAudio { .. }) => (
+                    false,
+                    json!("这首歌还不在网盘里，先在桌面端下载到网盘再收藏"),
+                    Value::Null,
+                ),
+                Err(e) => (false, json!(e), Value::Null),
+            };
             Ok(json!({ "synced": synced, "error": error, "key": key }))
         }
 
         "favorites_remove" => {
             let a: KeyArgs = serde_json::from_value(args).map_err(|e| format!("参数错误: {e}"))?;
-            state
-                .storage
-                .remove_favorite("s3", &a.key)
-                .map_err(|e| e.to_string())?;
-            // 只删「喜欢」目录里那份副本，歌单里的原文件不动。
+            // 先写清单再删对象；只有指向「喜欢」兜底目录的副本才会删文件。
             let (synced, error) = match state.client() {
-                Ok(client) => match library::remove_from_favorites(&client, &a.key).await {
+                Ok(client) => match favorites::remove(&client, &state.storage, &a.key).await {
                     Ok(()) => (true, Value::Null),
                     Err(e) => (false, json!(e)),
                 },

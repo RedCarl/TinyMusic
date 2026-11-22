@@ -6,6 +6,7 @@
 pub mod cache;
 pub mod download;
 pub mod error;
+pub mod favorites;
 pub mod http;
 pub mod id3;
 pub mod kwjson;

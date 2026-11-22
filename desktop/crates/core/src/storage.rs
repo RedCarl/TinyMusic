@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS download_failures (
 );
 CREATE TABLE IF NOT EXISTS favorites (
   provider TEXT NOT NULL, id TEXT NOT NULL, added_at INTEGER,
+  pending INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider, id)
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -161,6 +162,12 @@ impl Storage {
             "track_json",
             "ALTER TABLE downloads ADD COLUMN track_json TEXT",
         );
+        ensure_column(
+            &conn,
+            "favorites",
+            "pending",
+            "ALTER TABLE favorites ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
+        );
         migrate(&conn);
         Ok(Self {
             conn: Mutex::new(conn),
@@ -193,6 +200,12 @@ impl Storage {
             "downloads",
             "track_json",
             "ALTER TABLE downloads ADD COLUMN track_json TEXT",
+        );
+        ensure_column(
+            &conn,
+            "favorites",
+            "pending",
+            "ALTER TABLE favorites ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
         );
         migrate(&conn);
         Ok(Self {
@@ -246,6 +259,132 @@ impl Storage {
             "SELECT t.provider,t.id,t.title,t.artist,t.artist_id,t.album,t.album_id,t.duration,t.cover,t.qualities,t.has_advanced
              FROM favorites f JOIN tracks t ON t.provider=f.provider AND t.id=f.id
              ORDER BY f.added_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let raw: Option<String> = r.get(9).ok();
+            let available_qualities = raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<Quality>>(s).ok())
+                .unwrap_or_default();
+            Ok(Track {
+                provider: r.get(0)?,
+                id: r.get(1)?,
+                title: r.get(2)?,
+                artist: r.get(3)?,
+                artist_id: r.get(4)?,
+                album: r.get(5)?,
+                album_id: r.get(6)?,
+                duration_sec: r.get::<_, i64>(7).unwrap_or(0) as u32,
+                cover: r.get(8)?,
+                hot: 0,
+                availability: crate::model::Availability::Unknown,
+                subtitle: None,
+                available_qualities,
+                has_advanced: r.get::<_, i64>(10).unwrap_or(0) != 0,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 本地先记下「喜欢」（红心立刻亮），等写进网盘清单后再清 pending。
+    pub fn add_favorite_pending(&self, t: &Track) -> Result<()> {
+        self.upsert_track(t)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO favorites (provider,id,added_at,pending) VALUES (?1,?2,?3,1)
+             ON CONFLICT(provider,id) DO UPDATE SET pending=1",
+            params![t.provider, t.id, now_ts()],
+        )?;
+        Ok(())
+    }
+
+    /// 写进网盘清单后：把平台 id 换成网盘 key，并清掉 pending。
+    pub fn mark_favorite_synced(&self, provider: &str, old_id: &str, new_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let added_at: i64 = conn
+            .query_row(
+                "SELECT added_at FROM favorites WHERE provider=?1 AND id=?2",
+                params![provider, old_id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or_else(now_ts);
+        // 曲目元数据也得搬到新 id 上，否则 list_favorites 的 JOIN 查不出来
+        conn.execute(
+            "INSERT OR IGNORE INTO tracks
+             (provider,id,title,artist,artist_id,album,album_id,duration,cover,qualities,has_advanced)
+             SELECT provider, ?3, title, artist, artist_id, album, album_id, duration, cover, qualities, has_advanced
+             FROM tracks WHERE provider=?1 AND id=?2",
+            params![provider, old_id, new_id],
+        )?;
+        conn.execute(
+            "INSERT INTO favorites (provider,id,added_at,pending) VALUES (?1,?2,?3,0)
+             ON CONFLICT(provider,id) DO UPDATE SET pending=0",
+            params![provider, new_id, added_at],
+        )?;
+        if old_id != new_id {
+            conn.execute(
+                "DELETE FROM favorites WHERE provider=?1 AND id=?2",
+                params![provider, old_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn set_favorite_pending(&self, provider: &str, id: &str, pending: bool) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE favorites SET pending=?3 WHERE provider=?1 AND id=?2",
+            params![provider, id, pending as i64],
+        )?;
+        Ok(())
+    }
+
+    /// 本地收藏 + 收藏时间（迁移时保留「喜欢」页的顺序）
+    pub fn list_favorites_with_time(&self) -> Result<Vec<(Track, i64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT t.provider,t.id,t.title,t.artist,t.artist_id,t.album,t.album_id,t.duration,t.cover,t.qualities,t.has_advanced,f.added_at
+             FROM favorites f JOIN tracks t ON t.provider=f.provider AND t.id=f.id
+             ORDER BY f.added_at DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let raw: Option<String> = r.get(9).ok();
+            let available_qualities = raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Vec<Quality>>(s).ok())
+                .unwrap_or_default();
+            Ok((
+                Track {
+                    provider: r.get(0)?,
+                    id: r.get(1)?,
+                    title: r.get(2)?,
+                    artist: r.get(3)?,
+                    artist_id: r.get(4)?,
+                    album: r.get(5)?,
+                    album_id: r.get(6)?,
+                    duration_sec: r.get::<_, i64>(7).unwrap_or(0) as u32,
+                    cover: r.get(8)?,
+                    hot: 0,
+                    availability: crate::model::Availability::Unknown,
+                    subtitle: None,
+                    available_qualities,
+                    has_advanced: r.get::<_, i64>(10).unwrap_or(0) != 0,
+                },
+                r.get::<_, i64>(11).unwrap_or(0),
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 还没写进网盘清单的本地喜欢
+    pub fn list_pending_favorites(&self) -> Result<Vec<Track>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT t.provider,t.id,t.title,t.artist,t.artist_id,t.album,t.album_id,t.duration,t.cover,t.qualities,t.has_advanced
+             FROM favorites f JOIN tracks t ON t.provider=f.provider AND t.id=f.id
+             WHERE f.pending=1 ORDER BY f.added_at ASC",
         )?;
         let rows = stmt.query_map([], |r| {
             let raw: Option<String> = r.get(9).ok();

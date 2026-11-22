@@ -353,6 +353,32 @@ impl S3 {
         Ok(Some(resp.bytes().await?.to_vec()))
     }
 
+    /// HEAD 一个对象，只取 Content-Length（不存在或失败时返回 None）。
+    ///
+    /// 去重维护想知道能释放多少空间，不值得把对象下载下来。
+    pub async fn head_object_size(&self, key: &str) -> Result<Option<u64>> {
+        let (url, path) = self.object_path(key)?;
+        let empty_hash = sha256_hex(&[]);
+        let headers = self.sign("HEAD", &path, "", &empty_hash, &[])?;
+        let mut req = self.http.head(&url);
+        for (k, v) in &headers {
+            req = req.header(k.as_str(), v);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Http(format!("S3 读取请求失败：{}", e)))?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        // HEAD 的 body 是空的，reqwest 的 content_length() 会给 0；直接读响应头
+        Ok(resp
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok()))
+    }
+
     /// 列出前缀下的对象 key（最多 1000 个，单页上限）
     pub async fn list_keys(&self, prefix: &str) -> Result<Vec<String>> {
         Ok(self.list_keys_page(prefix, None).await?.0)

@@ -4,7 +4,7 @@
 
 import type { ProgressCallback } from './transport';
 import { invoke, invokeTask, shellInvoke } from './transport';
-import type { Availability, Quality, Track, Codec, AudioFormat, ProviderInfo, QualityCapability, TrackQualities, SearchPage, LyricLine, TrackDetail, AlbumRef, ArtistPage, AlbumPage, PlayerSource, DownloadRow, S3IntegrityIssue, S3IntegrityReport, S3FixProgress, FailedPartName, FailedPart, FailedDownload, Settings, S3PlaylistInfo, S3TrackRow, S3ImportResult, PlaylistRef, PlaylistPage, PlaylistDetail, AuthMethod, AuthCapability, Session, Progress } from './types';
+import type { Availability, Quality, Track, Codec, AudioFormat, ProviderInfo, QualityCapability, TrackQualities, SearchPage, LyricLine, TrackDetail, AlbumRef, ArtistPage, AlbumPage, PlayerSource, DownloadRow, FavoriteDuplicate, S3IntegrityIssue, S3IntegrityReport, S3FixProgress, FailedPartName, FailedPart, FailedDownload, Settings, S3PlaylistInfo, S3TrackRow, S3ImportResult, PlaylistRef, PlaylistPage, PlaylistDetail, AuthMethod, AuthCapability, Session, Progress } from './types';
 
 export const api = {
   providers: () => invoke<ProviderInfo[]>('get_providers'),
@@ -70,6 +70,11 @@ export const api = {
     }),
   favoriteList: () => invoke<Track[]>('favorite_list'),
   favoritesPull: () => invoke<Track[]>('favorites_pull'),
+  /** 扫「喜欢」目录里跟别的歌单重复的副本（桌面端维护入口） */
+  favoritesDedupeScan: () => invoke<FavoriteDuplicate[]>('favorites_dedupe_scan'),
+  /** 删掉选中的重复副本，返回释放的字节数 */
+  favoritesDedupePurge: (keys: string[]) =>
+    invoke<number>('favorites_dedupe_purge', { keys }),
   /**
    * 是否已收藏。
    *

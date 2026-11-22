@@ -47,8 +47,8 @@ export const browse: Record<string, string> = {
   // ---- 喜欢 ----
   '喜欢存在网盘里': 'Favorites live in Cloud',
   '还没有喜欢的歌曲': 'No favorites yet',
-  '点歌曲右边的红心，会自动收藏并下载到网盘':
-    'Click the heart next to a track to save it and download it to Cloud',
+  '点歌曲右边的红心，收藏会同步到网盘（网盘里已有的歌不再复制一份）':
+    'Click the heart next to a track to sync it to Cloud (songs already stored there are not copied again)',
 
   // ---- 音频 / 歌词 / 封面（下载失败、完整性检查共用） ----
   '音频': 'Audio',

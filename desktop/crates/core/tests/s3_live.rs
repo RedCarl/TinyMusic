@@ -7,17 +7,21 @@
 
 use tinymusic_core::s3::{S3Config, S3};
 
-fn client() -> S3 {
+fn client_with_prefix(prefix: &str) -> S3 {
     let cfg = S3Config {
         endpoint: std::env::var("S3_EP").expect("S3_EP"),
         region: std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".into()),
         bucket: std::env::var("S3_BUCKET").expect("S3_BUCKET"),
         access_key: std::env::var("S3_AK").expect("S3_AK"),
         secret_key: std::env::var("S3_SK").expect("S3_SK"),
-        prefix: "TinyMusic".into(),
+        prefix: prefix.to_string(),
         path_style: true,
     };
     S3::new(cfg, reqwest::Client::new())
+}
+
+fn client() -> S3 {
+    client_with_prefix("TinyMusic")
 }
 
 #[tokio::test]
@@ -131,50 +135,40 @@ async fn s3_playlist_crud_lifecycle() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 收藏只认「喜欢」目录：文件没了就不该再出现在喜欢里。
+/// 收藏本体是 favorites.json：「喜欢」目录只兜底存网盘里没有的歌。
 ///
 /// 本地跑法（桩）：
-/// ```sh
-/// cargo run -p tinymusic-server --example s3_stub -- --port 9107 --dir /tmp/tm-fav
-/// S3_EP=http://127.0.0.1:9107 S3_BUCKET=music S3_AK=x S3_SK=y \
-///   cargo test -p tinymusic-core --test s3_live favorites -- --ignored --nocapture
-/// ```
+///   cargo run -p tinymusic-server --example s3_stub -- --port 9107 --dir /tmp/tm-fav
+///   S3_EP=http://127.0.0.1:9107 S3_BUCKET=music S3_AK=x S3_SK=y \
+///     cargo test -p tinymusic-core --test s3_live favorites -- --ignored --nocapture
 #[tokio::test]
 #[ignore]
-async fn s3_favorites_follow_liked_folder() {
-    use tinymusic_core::library;
+async fn s3_favorites_manifest_roundtrip() {
+    use tinymusic_core::favorites;
     use tinymusic_core::model::Track;
     use tinymusic_core::storage::Storage;
 
-    let s3 = client();
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let folder = library::favorites_folder("TinyMusic");
-    assert_eq!(folder, "TinyMusic/喜欢/");
-
-    // 原歌单里的一首歌（旧版本只在 favorites.json 里记了它）
+    // 独立前缀：不碰真实桶里的收藏，删也只删这一份
+    let prefix = format!("TinyMusicTest{suffix}");
+    let s3 = client_with_prefix(&prefix);
+    let folder = tinymusic_core::library::favorites_folder(&prefix);
     let playlist = format!("Fav源{suffix}");
-    let src_key = format!("TinyMusic/{playlist}/Artist{suffix} - Song{suffix}.mp3");
-    let src_lrc = format!("TinyMusic/{playlist}/Artist{suffix} - Song{suffix}.lrc");
+    let src_key = format!("{prefix}/{playlist}/Artist{suffix} - Song{suffix}.mp3");
+    let src_lrc = format!("{prefix}/{playlist}/Artist{suffix} - Song{suffix}.lrc");
+    let kept_key = format!("{folder}Kept{suffix} - Alone{suffix}.mp3");
     s3.put_object(&src_key, b"audio".to_vec(), "audio/mpeg")
         .await
         .expect("put audio");
     s3.put_object(&src_lrc, b"[00:00.00]hi".to_vec(), "text/plain")
         .await
         .expect("put lrc");
-    // 「喜欢」目录里已经有的一首
-    let kept_key = format!("{folder}Kept{suffix} - Song{suffix}.mp3");
     s3.put_object(&kept_key, b"audio".to_vec(), "audio/mpeg")
         .await
         .expect("put kept");
-    // 文件已经被删掉、只在本地收藏里残留的一条
-    let gone_key = format!("{folder}Gone{suffix} - Song{suffix}.mp3");
-    // 旧版本写出来的 favorites.json：迁移完应该被删掉
-    s3.put_object("TinyMusic/favorites.json", b"[]".to_vec(), "application/json")
-        .await
-        .expect("put legacy json");
 
     let dir = std::env::temp_dir().join(format!("tinymusic-fav-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -186,11 +180,13 @@ async fn s3_favorites_follow_liked_folder() {
         artist: artist.into(),
         ..Track::default()
     };
+    // 本地收藏：桶里有的、文件已经不在的、以及一条平台收藏
     storage
         .add_favorite(&fav(&src_key, &format!("Song{suffix}"), &format!("Artist{suffix}")))
         .unwrap();
+    let gone_key = format!("{folder}Gone{suffix} - Vanished{suffix}.mp3");
     storage
-        .add_favorite(&fav(&gone_key, &format!("Song{suffix}"), &format!("Gone{suffix}")))
+        .add_favorite(&fav(&gone_key, &format!("Vanished{suffix}"), &format!("Gone{suffix}")))
         .unwrap();
     storage
         .add_favorite(&Track {
@@ -202,60 +198,95 @@ async fn s3_favorites_follow_liked_folder() {
         })
         .unwrap();
 
-    // 1) 老收藏搬进「喜欢」目录；文件没了的丢掉；目录里已有的照旧
-    let list = library::pull_favorites(&s3, &storage).await.expect("pull");
-    let copied = format!("{folder}Artist{suffix} - Song{suffix}.mp3");
+    // 1) 迁移：只写清单，不复制任何音频
+    let list = favorites::pull(&s3, &storage).await.expect("pull");
+    let copied_guess = format!("{folder}Artist{suffix} - Song{suffix}.mp3");
     assert!(
-        s3.get_object(&copied).await.unwrap().is_some(),
-        "老的 S3 收藏要复制进「喜欢」目录"
+        s3.get_object(&copied_guess).await.unwrap().is_none(),
+        "桶里已有的歌不该再复制一份到喜欢目录"
     );
-    assert!(
-        s3.get_object(&format!("{folder}Artist{suffix} - Song{suffix}.lrc"))
-            .await
-            .unwrap()
-            .is_some(),
-        "歌词要跟着走"
-    );
-    let ids: Vec<String> = list.iter().map(|t| t.id.clone()).collect();
-    assert!(ids.contains(&copied), "喜欢里应该有复制过来的那首: {ids:?}");
-    assert!(ids.contains(&kept_key), "目录里已有的那首不能掉: {ids:?}");
-    assert!(!ids.contains(&gone_key), "文件没了就不该再算收藏: {ids:?}");
+    let ids: Vec<String> = list
+        .iter()
+        .filter(|t| t.provider == "s3")
+        .map(|t| t.id.clone())
+        .collect();
+    assert!(ids.contains(&src_key), "喜欢要指向歌单里的原文件: {ids:?}");
+    assert!(ids.contains(&kept_key), "兜底目录里已有的那首不能掉: {ids:?}");
+    assert!(!ids.contains(&gone_key), "文件没了就不该再算喜欢: {ids:?}");
     assert!(
         list.iter().any(|t| t.provider == "netease"),
-        "平台收藏不在网盘里，不能被顺手删掉"
+        "还没同步的平台喜欢要留在列表里"
     );
-    let local = storage.list_favorites().unwrap();
+    let manifest = favorites::load_manifest(&s3)
+        .await
+        .expect("read manifest")
+        .expect("manifest 已落盘");
+    assert_eq!(manifest.items.len(), 2, "清单里只有两首真在桶里的");
+    assert_eq!(manifest.version, favorites::MANIFEST_VERSION);
+
+    // 1.5) 喜欢一首「歌单里已经有」的歌：只写清单，不复制
+    let src2_key = format!("{prefix}/{playlist}/Artist{suffix} - Another{suffix}.flac");
+    s3.put_object(&src2_key, b"flac".to_vec(), "audio/flac")
+        .await
+        .expect("put another");
+    let track = Track {
+        provider: "s3".into(),
+        id: src2_key.clone(),
+        title: format!("Another{suffix}"),
+        artist: format!("Artist{suffix}"),
+        ..Track::default()
+    };
+    match favorites::add(&s3, &storage, &track).await.expect("add") {
+        favorites::FavoriteAdd::Added { key } => assert_eq!(key, src2_key),
+        favorites::FavoriteAdd::NeedsAudio { .. } => panic!("桶里已有的歌不该要求上传"),
+    }
     assert!(
-        !local.iter().any(|t| t.id == gone_key),
-        "本地缓存要跟目录对齐"
-    );
-    assert!(
-        !s3.get_object("TinyMusic/favorites.json").await.unwrap().is_some(),
-        "迁移后不再留着 favorites.json"
+        s3.get_object(&format!("{folder}Artist{suffix} - Another{suffix}.flac"))
+            .await
+            .unwrap()
+            .is_none(),
+        "点喜欢不该把歌单里的歌再复制一份"
     );
 
-    // 2) 取消喜欢只删「喜欢」里的副本，歌单里的原文件不动
-    library::remove_from_favorites(&s3, &copied)
+    // 2) 取消喜欢：指向歌单的那条只删清单，文件不动
+    favorites::remove(&s3, &storage, &src_key)
         .await
-        .expect("unfavorite");
-    assert!(s3.get_object(&copied).await.unwrap().is_none());
-    assert!(s3.get_object(&src_key).await.unwrap().is_some(), "原文件不能被删");
+        .expect("unfavorite playlist");
+    assert!(s3.get_object(&src_key).await.unwrap().is_some());
     assert!(s3.get_object(&src_lrc).await.unwrap().is_some());
 
-    // 3) 再拉一次不会复活（迁移只跑一次）
-    let again = library::pull_favorites(&s3, &storage).await.unwrap();
-    assert!(!again.iter().any(|t| t.id == copied), "取消过的收藏不能复活");
+    // 3) 取消喜欢：只有兜底副本的那条要删文件
+    favorites::remove(&s3, &storage, &kept_key)
+        .await
+        .expect("unfavorite fallback");
+    assert!(s3.get_object(&kept_key).await.unwrap().is_none());
 
-    // 4) 歌单里删歌之后，喜欢里跟着少
-    s3.delete_object(&kept_key).await.unwrap();
-    let after = library::pull_favorites(&s3, &storage).await.unwrap();
-    assert!(!after.iter().any(|t| t.id == kept_key));
+    // 4) 去重维护：喜欢里多一份同歌副本 → 能扫出来、能只删那份
+    let dup = format!("{folder}Artist{suffix} - Song{suffix}.mp3");
+    s3.put_object(&dup, b"audio".to_vec(), "audio/mpeg")
+        .await
+        .expect("put dup");
+    let report = favorites::dedupe_report(&s3).await.expect("dedupe report");
+    assert!(
+        report
+            .iter()
+            .any(|d| d.duplicate == dup && d.canonical == src_key),
+        "应报出喜欢目录里的重复副本: {report:?}"
+    );
+    let freed = favorites::dedupe_purge(&s3, std::slice::from_ref(&dup))
+        .await
+        .expect("purge");
+    assert!(freed > 0);
+    assert!(s3.get_object(&dup).await.unwrap().is_none());
+    assert!(s3.get_object(&src_key).await.unwrap().is_some());
 
-    // 清理
-    for key in [src_key, src_lrc, kept_key, copied] {
-        let _ = s3.delete_object(&key).await;
+    // 清理：整个测试前缀（含清单）一起删
+    let _ = s3.delete_object(&favorites::manifest_key(&prefix)).await;
+    if let Ok(keys) = s3.list_keys_all(&format!("{prefix}/")).await {
+        for key in keys {
+            let _ = s3.delete_object(&key).await;
+        }
     }
-    let _ = s3.delete_object(&format!("{folder}Artist{suffix} - Song{suffix}.lrc")).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 

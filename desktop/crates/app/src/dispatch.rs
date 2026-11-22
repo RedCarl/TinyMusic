@@ -199,7 +199,7 @@ pub async fn dispatch(
                 artist: Option<String>,
             }
             let a: A = serde_json::from_value(args.clone()).map_err(|e| format!("参数错误: {e}"))?;
-            let out = favorite_remove(state, a.provider, a.id, a.title, a.artist)?;
+            let out = favorite_remove(state, a.provider, a.id, a.title, a.artist).await?;
             serde_json::to_value(out).map_err(|e| e.to_string())
         }
         "favorite_list" => {
@@ -226,6 +226,25 @@ pub async fn dispatch(
             }
             let a: A = serde_json::from_value(args.clone()).map_err(|e| format!("参数错误: {e}"))?;
             let out = favorite_check(state, a.provider, a.id, a.title, a.artist)?;
+            serde_json::to_value(out).map_err(|e| e.to_string())
+        }
+        "favorites_dedupe_scan" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct A {}
+            #[allow(unused_variables)]
+            let a: A = serde_json::from_value(args.clone()).map_err(|e| format!("参数错误: {e}"))?;
+            let out = favorites_dedupe_scan(state).await?;
+            serde_json::to_value(out).map_err(|e| e.to_string())
+        }
+        "favorites_dedupe_purge" => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct A {
+                keys: Vec<String>,
+            }
+            let a: A = serde_json::from_value(args.clone()).map_err(|e| format!("参数错误: {e}"))?;
+            let out = favorites_dedupe_purge(state, a.keys).await?;
             serde_json::to_value(out).map_err(|e| e.to_string())
         }
         "favorites_pull" => {
