@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainTabView: View {
     let model: AppModel
+    let pro: ProStore
     @Binding var selection: Int
 
     var body: some View {
@@ -22,7 +23,7 @@ struct MainTabView: View {
                         .tabItem { Label(L("缓存"), systemImage: "arrow.down.circle") }
                         .tag(2)
 
-                    tabContent(SettingsView(model: model))
+                    tabContent(SettingsView(model: model, pro: pro))
                         .tabItem { Label(L("设置"), systemImage: "gearshape") }
                         .tag(3)
                 }

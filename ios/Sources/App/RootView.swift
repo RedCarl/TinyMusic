@@ -5,24 +5,31 @@ struct RootView: View {
 
     @State private var selectedTab = AppConfiguration.initialTab
     @State private var showS3Reminder = false
+    @State private var pro = ProStore(offer: .tinyMusic)
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        Group {
-            if !model.ready {
-                LaunchView(status: model.status, error: model.error)
-            } else {
-                MainTabView(model: model, selection: $selectedTab)
+        ZStack {
+            Group {
+                if !model.ready {
+                    LaunchView(status: model.status, error: model.error)
+                } else {
+                    MainTabView(model: model, pro: pro, selection: $selectedTab)
+                }
             }
         }
         // 语言一改，locale 也跟着换：SwiftUI 会重配导航栏/标签栏等系统 chrome，
         // 界面文案由 L() 的 Observation 刷新。
         .environment(\.locale, Localization.shared.locale)
         .task {
+            await pro.start()
             await model.boot()
             if model.ready && !model.settings.isConfigured && !model.player.showNowPlaying {
                 showS3Reminder = true
             }
+        }
+        .fullScreenCover(isPresented: Binding(get: { pro.isLocked }, set: { _ in })) {
+            ProPaywallView(store: pro)
         }
         .alert(L("添加 S3 网盘"), isPresented: $showS3Reminder) {
             Button(L("去设置")) { selectedTab = 3 }
@@ -40,6 +47,7 @@ struct RootView: View {
             // 进后台前补一次，别让它们停在窗口里被系统挂起。
             model.cache.flushSave()
             model.player.eq.flush()
+            if phase == .active { Task { await pro.refresh() } }
         }
     }
 }

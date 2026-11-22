@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     let model: AppModel
+    let pro: ProStore
 
     @Environment(\.openURL) private var openURL
 
@@ -36,6 +37,10 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    ProSettingsRow(store: pro)
+                }
+
                 Section {
                     HStack(spacing: 12) {
                         ZStack(alignment: .topTrailing) {
