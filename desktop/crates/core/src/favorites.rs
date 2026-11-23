@@ -8,6 +8,8 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::download::build_filename;
 use crate::library::{
@@ -103,28 +105,248 @@ fn now_secs() -> i64 {
 
 // ---------- 清单读写 ----------
 
+/// 备份文件名里的内容摘要取几个字节（8 个十六进制字符）
+const BACKUP_TAG_BYTES: usize = 4;
+
+/// 清单读出来的样子。桶里那份如果不是当前格式，用完要把 v2 回写一次。
+struct LoadedManifest {
+    manifest: FavoritesManifest,
+    /// 是旧写法 / 版本号对不上：回写一次就永久理顺
+    rewritten: bool,
+}
+
+/// 备份对象名带上内容摘要：同一份文件反复读也只留一份备份。
+fn backup_key(key: &str, bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let tag: String = digest[..BACKUP_TAG_BYTES]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{key}.backup-{tag}.json")
+}
+
+/// 读不懂的清单原文留一份，绝不直接覆盖。只读密钥下写不进去也不影响继续。
+async fn backup_manifest(client: &S3, key: &str, bytes: &[u8]) {
+    let target = backup_key(key, bytes);
+    if client
+        .head_object_size(&target)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let _ = client
+        .put_object(&target, bytes.to_vec(), "application/json; charset=utf-8")
+        .await;
+}
+
+fn value_as_u32(value: &Value) -> Option<u32> {
+    match value {
+        Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn text_field(map: &serde_json::Map<String, Value>, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|k| map.get(*k).and_then(Value::as_str))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 清单里的一条：当前 v2 写法（title/artist/key/addedAt），
+/// 也认 0.7.x 的 Track（id 就是网盘对象 key，平台歌只有歌名/歌手）。
+fn entry_from_value(value: &Value) -> Option<FavoriteEntry> {
+    let map = value.as_object()?;
+    let title = text_field(map, &["title"]);
+    let artist = text_field(map, &["artist"]);
+    let mut key = text_field(map, &["key"]);
+    if key.is_empty() {
+        let id = text_field(map, &["id"]);
+        let provider = text_field(map, &["provider"]);
+        // 网盘歌曲的 id 就是桶里的 key；平台歌（netease/kuwo…）的 id 是数字，后面按歌名找
+        if provider == "s3" || (provider.is_empty() && id.contains('/')) {
+            key = id;
+        }
+    }
+    let added_at = ["addedAt", "added_at", "addedat", "added"]
+        .iter()
+        .find_map(|k| map.get(*k).and_then(value_as_i64))
+        .unwrap_or(0);
+    if key.is_empty() && title.is_empty() && artist.is_empty() {
+        return None;
+    }
+    let mut entry = FavoriteEntry {
+        title,
+        artist,
+        key,
+        added_at,
+    };
+    fill_names_from_key(&mut entry);
+    Some(entry)
+}
+
+/// 只有 key、没有歌名歌手时，从对象名反解一份，别让所有条目都塌成一个「空歌名」
+fn fill_names_from_key(entry: &mut FavoriteEntry) {
+    if !entry.title.is_empty() || !entry.artist.is_empty() || entry.key.is_empty() {
+        return;
+    }
+    let (artist, title) = parse_track_filename(stem_of(&entry.key));
+    entry.title = title;
+    entry.artist = artist;
+}
+
+/// 尽力把清单读成 v2：版本号写成字符串、items 缺字段之类的小毛病都兜住。
+fn parse_manifest(text: &str) -> Result<LoadedManifest, String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    match &value {
+        // 0.7.x 及更早：整份喜欢就是一串 Track
+        Value::Array(items) => Ok(LoadedManifest {
+            manifest: FavoritesManifest {
+                version: MANIFEST_VERSION,
+                updated_at: 0,
+                items: items.iter().filter_map(entry_from_value).collect(),
+            },
+            rewritten: true,
+        }),
+        Value::Object(map) => parse_manifest_object(map),
+        _ => Err("既不是对象也不是数组".into()),
+    }
+}
+
+fn parse_manifest_object(map: &serde_json::Map<String, Value>) -> Result<LoadedManifest, String> {
+    // 还有一种写法是 { "<网盘 key>": 加入时间 }：把像音频的 key 收回来
+    if !map.contains_key("items") && !map.contains_key("version") {
+        let items: Vec<FavoriteEntry> = map
+            .iter()
+            .filter(|(k, _)| is_audio_key(k))
+            .map(|(k, v)| {
+                let mut entry = FavoriteEntry {
+                    title: String::new(),
+                    artist: String::new(),
+                    key: k.clone(),
+                    added_at: value_as_i64(v).unwrap_or(0),
+                };
+                fill_names_from_key(&mut entry);
+                entry
+            })
+            .collect();
+        return Ok(LoadedManifest {
+            manifest: FavoritesManifest {
+                version: MANIFEST_VERSION,
+                updated_at: 0,
+                items,
+            },
+            rewritten: true,
+        });
+    }
+    let items = match map.get("items") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items.iter().filter_map(entry_from_value).collect(),
+        Some(_) => return Err("items 不是数组".into()),
+    };
+    let version_ok = map
+        .get("version")
+        .and_then(value_as_u32)
+        .is_some_and(|v| v == MANIFEST_VERSION);
+    Ok(LoadedManifest {
+        manifest: FavoritesManifest {
+            version: MANIFEST_VERSION,
+            updated_at: map.get("updatedAt").and_then(value_as_i64).unwrap_or(0),
+            items,
+        },
+        rewritten: !version_ok,
+    })
+}
+
+/// 清单文件的三种状态：没有、读到了、文件在但读不懂（原文已备份）。
+enum ManifestRead {
+    Missing,
+    Read(LoadedManifest),
+    Unreadable,
+}
+
+/// 读清单。旧格式、版本号对不上、甚至整个文件读不懂都不再让「喜欢」报错：
+/// 能认的认下来（读不懂的原文先备份），剩下的由上层从「喜欢」目录和本地库重建。
 pub async fn load_manifest(client: &S3) -> Result<Option<FavoritesManifest>, String> {
+    let Some(mut loaded) = load_manifest_ex(client).await? else {
+        return Ok(None);
+    };
+    // 旧格式的平台收藏只留了歌名/歌手：按桶里的对象把 key 补回来
+    if loaded
+        .manifest
+        .items
+        .iter()
+        .any(|e| e.key.trim().is_empty())
+    {
+        let index = bucket_index(client).await?;
+        resolve_unkeyed(&index, &mut loaded.manifest);
+    }
+    Ok(Some(loaded.manifest))
+}
+
+/// 只有「读到 / 没读到」两种结果的调用方用这个（读不懂按没有处理）。
+async fn load_manifest_ex(client: &S3) -> Result<Option<LoadedManifest>, String> {
+    match read_manifest(client).await? {
+        ManifestRead::Read(loaded) => Ok(Some(loaded)),
+        ManifestRead::Missing | ManifestRead::Unreadable => Ok(None),
+    }
+}
+
+/// 读清单原文，带上「这份要不要回写成 v2」的判断。
+async fn read_manifest(client: &S3) -> Result<ManifestRead, String> {
     let key = manifest_key(&client.normalized_prefix());
     let bytes = client.get_object(&key).await.map_err(|e| e.to_string())?;
     let Some(bytes) = bytes else {
-        return Ok(None);
+        return Ok(ManifestRead::Missing);
     };
     let text = String::from_utf8_lossy(&bytes);
-    let manifest: FavoritesManifest = serde_json::from_str(&text)
-        .map_err(|e| format!("喜欢清单格式不对（{key}）：{e}"))?;
-    if manifest.version != MANIFEST_VERSION {
-        return Err(format!(
-            "喜欢清单版本 {} 不认识（本版本只认 {}），没有覆盖它",
-            manifest.version, MANIFEST_VERSION
-        ));
+    let parsed = match parse_manifest(&text) {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            // 实在读不懂：原文备份一份，交给上层按「喜欢」目录和本地记录重建
+            backup_manifest(client, &key, &bytes).await;
+            return Ok(ManifestRead::Unreadable);
+        }
+    };
+    if parsed.rewritten {
+        backup_manifest(client, &key, &bytes).await;
     }
-    Ok(Some(manifest))
+    Ok(ManifestRead::Read(parsed))
+}
+
+/// 旧清单里只留了歌名/歌手的条目（平台歌）：按桶里的对象把 key 补回来。
+fn resolve_unkeyed(index: &BucketIndex, manifest: &mut FavoritesManifest) -> bool {
+    let mut changed = false;
+    for entry in &mut manifest.items {
+        if !entry.key.trim().is_empty() {
+            continue;
+        }
+        if let Some(key) = index.canonical_for(&entry.title, &entry.artist) {
+            entry.key = key;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// 写盘前统一整理：版本、时间戳、同一首歌只留一条、按加入时间倒序
 fn normalized(mut manifest: FavoritesManifest, now: i64) -> FavoritesManifest {
     manifest.version = MANIFEST_VERSION;
     manifest.updated_at = now;
+    // 认不出网盘对象 key 的条目指向不了任何一首歌，写进清单也没用
+    manifest.items.retain(|e| !e.key.trim().is_empty());
     for entry in &mut manifest.items {
         if entry.added_at == 0 {
             entry.added_at = now;
@@ -547,10 +769,23 @@ async fn delete_object_with_siblings(client: &S3, key: &str) {
 /// 拉「喜欢」：清单是唯一真源；顺带校验对象还在不在、把本地缓存对齐。
 pub async fn pull(client: &S3, storage: &Storage) -> Result<Vec<Track>, String> {
     migrate_v2(client, storage).await?;
-    let mut manifest = load_manifest(client).await?.unwrap_or_default();
     let index = bucket_index(client).await?;
-
     let mut changed = false;
+    let mut manifest = match read_manifest(client).await? {
+        ManifestRead::Read(loaded) => {
+            // 桶里还是旧格式：这次顺手回写成 v2
+            changed = loaded.rewritten;
+            loaded.manifest
+        }
+        // 清单坏了（原文已备份）：按「喜欢」目录和本地记录重建，别让喜欢列表变空
+        ManifestRead::Unreadable => {
+            changed = true;
+            build_manifest(client, storage, &index).await?
+        }
+        ManifestRead::Missing => FavoritesManifest::default(),
+    };
+    changed |= resolve_unkeyed(&index, &mut manifest);
+
     let mut kept: Vec<FavoriteEntry> = Vec::new();
     for mut entry in manifest.items.drain(..) {
         if let Some(canonical) = index.canonical_for(&entry.title, &entry.artist) {
@@ -690,14 +925,37 @@ pub async fn migrate_v2(client: &S3, storage: &Storage) -> Result<(), String> {
     }
     let index = bucket_index(client).await?;
 
-    // 已经有清单（新版本写过）：只补本地镜像
-    if let Some(manifest) = load_manifest(client).await? {
+    // 已经有清单：补本地镜像；是旧写法就顺手回写成 v2（写不进去也没关系，
+    // 只读密钥照样能浏览，原文已经在 load_manifest_ex 里备份过了）
+    if let Some(loaded) = load_manifest_ex(client).await? {
+        let mut manifest = loaded.manifest;
+        let mut changed = loaded.rewritten;
+        changed |= resolve_unkeyed(&index, &mut manifest);
+        if changed {
+            let _ = save_manifest(client, &manifest).await;
+        }
         let rows = entries_to_rows(client, &index, &manifest);
         sync_cache(storage, &rows);
         let _ = storage.meta_set(MIGRATED_META, "1");
         return Ok(());
     }
 
+    // 没有清单，或者清单读不懂（原文已经备份）：按「喜欢」目录 + 本地记录重建。
+    // 写不进去（比如只读密钥）也不挡浏览，本地镜像照样能显示喜欢。
+    let manifest = build_manifest(client, storage, &index).await?;
+    let _ = save_manifest(client, &manifest).await;
+    let rows = entries_to_rows(client, &index, &manifest);
+    sync_cache(storage, &rows);
+    let _ = storage.meta_set(MIGRATED_META, "1");
+    Ok(())
+}
+
+/// 从「喜欢」目录 + 本地收藏重建一份 v2 清单：不删任何文件。
+async fn build_manifest(
+    client: &S3,
+    storage: &Storage,
+    index: &BucketIndex,
+) -> Result<FavoritesManifest, String> {
     let prefix = client.normalized_prefix();
     let folder = favorites_folder(&prefix);
     let now = now_secs();
@@ -747,16 +1005,11 @@ pub async fn migrate_v2(client: &S3, storage: &Storage) -> Result<(), String> {
         });
     }
 
-    let manifest = FavoritesManifest {
+    Ok(FavoritesManifest {
         version: MANIFEST_VERSION,
         updated_at: now,
         items,
-    };
-    save_manifest(client, &manifest).await?;
-    let rows = entries_to_rows(client, &index, &manifest);
-    sync_cache(storage, &rows);
-    let _ = storage.meta_set(MIGRATED_META, "1");
-    Ok(())
+    })
 }
 
 // ---------- 去重维护（桌面端手动触发） ----------
@@ -963,5 +1216,121 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, "TinyMusic/喜欢/A - Song.flac");
     }
-}
 
+    fn legacy_track(provider: &str, id: &str, title: &str, artist: &str) -> String {
+        serde_json::json!({
+            "provider": provider,
+            "id": id,
+            "title": title,
+            "artist": artist,
+            "album": "",
+            "cover": null,
+            "duration_sec": 0,
+            "availability": "unknown",
+            "available_qualities": [],
+            "has_advanced": false
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn legacy_track_array_is_read_as_manifest() {
+        // 0.7.x 及更早写出来的 favorites.json：整份是一串 Track
+        let text = format!(
+            "[{},{}]",
+            legacy_track("s3", "TinyMusic/喜欢/A - B.flac", "B", "A"),
+            legacy_track("netease", "123456", "Song", "Someone")
+        );
+        let parsed = parse_manifest(&text).expect("旧格式要能读");
+        assert!(parsed.rewritten, "旧格式要回写成 v2");
+        assert_eq!(parsed.manifest.version, MANIFEST_VERSION);
+        assert_eq!(parsed.manifest.items.len(), 2);
+        let s3 = &parsed.manifest.items[0];
+        assert_eq!(s3.key, "TinyMusic/喜欢/A - B.flac");
+        assert_eq!(s3.title, "B");
+        // 平台歌没有网盘 key，等桶索引补
+        let platform = &parsed.manifest.items[1];
+        assert!(platform.key.is_empty());
+        assert_eq!(platform.title, "Song");
+        assert_eq!(platform.artist, "Someone");
+    }
+
+    #[test]
+    fn manifest_with_odd_version_is_still_read() {
+        // version 写成字符串：以前直接报 invalid type，现在当 v2 读
+        let text = r#"{"version":"2","items":[{"title":"B","artist":"A","key":"TinyMusic/A - B.flac","addedAt":7}]}"#;
+        let parsed = parse_manifest(text).expect("version 是字符串也要能读");
+        assert!(!parsed.rewritten, "版本对得上就不用回写");
+        assert_eq!(parsed.manifest.items.len(), 1);
+        assert_eq!(parsed.manifest.items[0].added_at, 7);
+
+        // version 是个对象：条目照样救回来，只是要回写一次
+        let text = r#"{"version":{"major":2},"items":[{"title":"B","artist":"A","key":"TinyMusic/A - B.flac"}]}"#;
+        let parsed = parse_manifest(text).expect("version 是对象也要能把条目捞回来");
+        assert!(parsed.rewritten);
+        assert_eq!(parsed.manifest.items.len(), 1);
+    }
+
+    #[test]
+    fn key_to_timestamp_map_is_salvaged() {
+        // 另一种旧写法：{ "<网盘 key>": 加入时间 }
+        let text = r#"{"TinyMusic/喜欢/A - B.flac":100,"TinyMusic/喜欢/A - C.mp3":200,"note":"x"}"#;
+        let parsed = parse_manifest(text).expect("映射写法也要认");
+        assert!(parsed.rewritten);
+        assert_eq!(parsed.manifest.items.len(), 2);
+        assert_eq!(parsed.manifest.items[0].title, "B");
+        assert_eq!(parsed.manifest.items[0].artist, "A");
+        assert_eq!(parsed.manifest.items[0].added_at, 100);
+    }
+
+    #[test]
+    fn unreadable_manifest_is_an_error_not_a_panic() {
+        assert!(parse_manifest("definitely not json").is_err());
+        assert!(parse_manifest("null").is_err());
+        assert!(parse_manifest(r#"{"items":"nope"}"#).is_err());
+    }
+
+    #[test]
+    fn unkeyed_entries_get_key_from_bucket_index() {
+        let index = idx(&["TinyMusic/喜欢/A - Song.flac"]);
+        let mut manifest = FavoritesManifest {
+            version: MANIFEST_VERSION,
+            updated_at: 0,
+            items: vec![FavoriteEntry {
+                title: "Song".into(),
+                artist: "A".into(),
+                key: String::new(),
+                added_at: 1,
+            }],
+        };
+        assert!(resolve_unkeyed(&index, &mut manifest));
+        assert_eq!(manifest.items[0].key, "TinyMusic/喜欢/A - Song.flac");
+    }
+
+    #[test]
+    fn normalized_drops_entries_without_key() {
+        let out = normalized(
+            FavoritesManifest {
+                version: MANIFEST_VERSION,
+                updated_at: 0,
+                items: vec![
+                    FavoriteEntry {
+                        title: "Gone".into(),
+                        artist: "X".into(),
+                        key: String::new(),
+                        added_at: 1,
+                    },
+                    FavoriteEntry {
+                        title: "Kept".into(),
+                        artist: "X".into(),
+                        key: "TinyMusic/喜欢/X - Kept.flac".into(),
+                        added_at: 2,
+                    },
+                ],
+            },
+            9,
+        );
+        assert_eq!(out.items.len(), 1);
+        assert_eq!(out.items[0].title, "Kept");
+    }
+}
