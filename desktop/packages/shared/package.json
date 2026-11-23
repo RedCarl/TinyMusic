@@ -1,6 +1,6 @@
 {
   "name": "@tinymusic/shared",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "description": "TinyMusic 前端公共库：类型、API 契约、传输层、纯逻辑（桌面 Svelte 与 mobile ReactLynx 共用）",

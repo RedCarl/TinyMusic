@@ -1,6 +1,6 @@
 {
   "name": "@tinymusic/theme",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "type": "module",
   "description": "设计令牌单一来源：从桌面 app.css 生成 mobile(Lynx) 用的 hex/rgba 令牌",
