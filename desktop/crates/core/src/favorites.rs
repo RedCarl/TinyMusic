@@ -320,7 +320,8 @@ async fn read_manifest(client: &S3) -> Result<ManifestRead, String> {
             return Ok(ManifestRead::Unreadable);
         }
     };
-    if parsed.rewritten {
+    // 只有真读出条目才值得留备份（空的 {} / [] 没什么可丢的，别往桶里堆文件）
+    if parsed.rewritten && !parsed.manifest.items.is_empty() {
         backup_manifest(client, &key, &bytes).await;
     }
     Ok(ManifestRead::Read(parsed))
