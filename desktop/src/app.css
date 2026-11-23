@@ -1649,6 +1649,16 @@ button.primary {
   font-weight: 600;
 }
 
+.actions button.fav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.actions button.fav.on {
+  color: var(--brand);
+}
+
 .qmsg {
   margin-top: 12px;
   color: var(--success);
@@ -2965,6 +2975,35 @@ button.primary {
   opacity: 1;
 }
 
+/* 队列里的红心：喜欢的常亮，其它的悬停才出现，不占视觉 */
+.qp-fav {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--fg3);
+  opacity: 0;
+  transition:
+    opacity 140ms ease-out,
+    color 140ms ease-out;
+}
+
+.qp-row:hover .qp-fav {
+  opacity: 0.75;
+}
+
+.qp-fav:hover {
+  color: var(--brand);
+  opacity: 1;
+}
+
+.qp-fav.on {
+  color: var(--brand);
+  opacity: 1;
+}
+
 .qp-empty {
   padding: 34px 18px;
   color: var(--fg3);
@@ -4041,6 +4080,10 @@ button.primary {
 
 .playbtn:hover {
   color: var(--fg);
+}
+
+.s3row .icon-btn.fav.on {
+  color: var(--brand);
 }
 
 .s3meta {

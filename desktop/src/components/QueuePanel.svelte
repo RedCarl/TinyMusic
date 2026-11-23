@@ -4,6 +4,9 @@
   import { fmtDuration } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { openTrackMenu } from '../lib/trackMenu.svelte';
+  import { appCfg } from '../lib/config.svelte';
+  import { isFavorite, primeFavorites, toggleFavorite } from '../lib/favorite.svelte';
+  import { showToast } from '../lib/toast.svelte';
   import { t } from '../lib/i18n.svelte';
   import {
     player,
@@ -41,6 +44,8 @@
     // 刚打开时直接到位；面板开着时换歌才用平滑滚动
     const instant = !wasOpen;
     wasOpen = true;
+    // 面板打开时一次标好红心状态（只查一次收藏清单）
+    if (appCfg.s3Enabled) void primeFavorites(player.queue);
     // 等面板挂上、拿到真实高度之后再定位
     const raf = requestAnimationFrame(() => centerCurrent(instant));
     return () => cancelAnimationFrame(raf);
@@ -133,6 +138,19 @@
               </span>
               <span class="qp-d">{fmtDuration(track.duration_sec)}</span>
             </button>
+            {#if appCfg.s3Enabled}
+              <button
+                class="qp-fav"
+                class:on={isFavorite(track)}
+                title={isFavorite(track) ? t('取消喜欢') : t('喜欢（收藏到网盘）')}
+                aria-label={isFavorite(track) ? t('取消喜欢') : t('喜欢')}
+                aria-pressed={isFavorite(track)}
+                onclick={() =>
+                  toggleFavorite(track).catch((e) => showToast(String(e)))}
+              >
+                <HugeiconsIcon icon={icons.favorite} size={12} />
+              </button>
+            {/if}
             <button
               class="qp-x"
               title={t('从列表移除')}

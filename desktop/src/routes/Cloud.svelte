@@ -12,6 +12,7 @@
   import MorphIcon from '../components/MorphIcon.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
   import { openIntegrity, integrityUi } from '../lib/s3Integrity.svelte';
+  import { primeFavorites, isFavorite, toggleFavorite } from '../lib/favorite.svelte';
   import ErrorNotice from '../components/ErrorNotice.svelte';
   import { t } from '../lib/i18n.svelte';
 
@@ -118,10 +119,25 @@
     rows = [];
     try {
       rows = await api.s3PlaylistTracks(name, root);
+      // 红心状态一次标好：只查一次收藏清单，不逐行打接口
+      void primeFavorites(rows.map((r) => r.track));
     } catch (e) {
       err = String(e);
     } finally {
       detailLoading = false;
+    }
+  }
+
+  /** 点红心：网盘里的歌和平台歌走同一条收藏链路 */
+  async function toggleFav(r: S3TrackRow) {
+    try {
+      const next = await toggleFavorite(r.track);
+      if (!next && current === FAVORITES) {
+        // 在「喜欢」列表里取消喜欢，这首歌就不属于这里了，直接拿掉这一行
+        rows = rows.filter((x) => x.key !== r.key);
+      }
+    } catch (e) {
+      err = String(e);
     }
   }
 
@@ -281,6 +297,15 @@
           showToast(t('已设为下一首'));
         },
       },
+      ...(appCfg.s3Enabled
+        ? [
+            {
+              label: isFavorite(r.track) ? t('取消喜欢') : t('喜欢（收藏到网盘）'),
+              icon: icons.favorite,
+              run: () => toggleFav(r),
+            },
+          ]
+        : []),
       ...(current && canManage(current)
         ? [
             { sep: true as const },
@@ -522,6 +547,18 @@
               </span>
               <span class="s3sub">{r.track.artist || t('未知歌手')}</span>
             </span>
+            {#if appCfg.s3Enabled}
+              <button
+                class="icon-btn fav"
+                class:on={isFavorite(r.track)}
+                title={isFavorite(r.track) ? t('取消喜欢') : t('喜欢（收藏到网盘）')}
+                aria-label={isFavorite(r.track) ? t('取消喜欢') : t('喜欢')}
+                aria-pressed={isFavorite(r.track)}
+                onclick={() => toggleFav(r)}
+              >
+                <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.inline} />
+              </button>
+            {/if}
             <button
               class="playbtn"
               aria-label={isPlaying(r.key) ? t('暂停') : t('播放')}

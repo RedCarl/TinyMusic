@@ -1,13 +1,13 @@
 <script lang="ts">
   import { HugeiconsIcon } from '@hugeicons/svelte';
   import MorphIcon from './MorphIcon.svelte';
-  import { api, fmtDuration, isBlocked, type Track } from '../lib/api';
+  import { fmtDuration, isBlocked, type Track } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { playTrack, player, toggle, isCurrent } from '../lib/player.svelte';
   import { requestDownload, isPending } from '../lib/download.svelte';
   import { openTrackMenu } from '../lib/trackMenu.svelte';
   import { appCfg } from '../lib/config.svelte';
-  import { showToast } from '../lib/toast.svelte';
+  import { isFavorite, ensureFavorite, toggleFavorite } from '../lib/favorite.svelte';
   import { go } from '../lib/router.svelte';
   import { t, tc } from '../lib/i18n.svelte';
 
@@ -24,37 +24,17 @@
   } = $props();
 
   let msg = $state('');
-  let fav = $state(false);
-  let favLoaded = $state(false);
 
   const current = $derived(isCurrent(track));
   const loading = $derived(current && (player.status === 'loading' || player.loading));
   const playing = $derived(current && player.status === 'playing');
   const pending = $derived(isPending(track));
-
-  async function checkFav() {
-    if (favLoaded) return;
-    favLoaded = true;
-    try {
-      fav = await api.favoriteCheck(track);
-    } catch {
-      /* 忽略 */
-    }
-  }
+  const fav = $derived(isFavorite(track));
 
   async function toggleFav() {
     try {
-      if (fav) {
-        await api.favoriteRemove(track);
-        fav = false;
-        onFavoriteChange?.(track, false);
-        showToast(t('已取消喜欢'));
-      } else {
-        await api.favoriteAdd(track);
-        fav = true;
-        onFavoriteChange?.(track, true);
-        showToast(t('已收藏到网盘'));
-      }
+      const next = await toggleFavorite(track);
+      onFavoriteChange?.(track, next);
     } catch (e) {
       msg = String(e);
     }
@@ -85,7 +65,7 @@
 
   // 挂载后查询一次收藏状态（避免依赖悬停事件）
   $effect(() => {
-    checkFav();
+    if (appCfg.s3Enabled) void ensureFavorite(track);
   });
 </script>
 
@@ -97,10 +77,7 @@
   oncontextmenu={(e) =>
     openTrackMenu(e, track, {
       queue,
-      onFavorite: (f) => {
-        fav = f;
-        onFavoriteChange?.(track, f);
-      },
+      onFavorite: (f) => onFavoriteChange?.(track, f),
     })}
 >
   <div class="idx">

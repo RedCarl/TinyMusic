@@ -20,7 +20,9 @@
   import { router } from '../lib/router.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { requestDownload } from '../lib/download.svelte';
-  import { copyText } from '../lib/toast.svelte';
+  import { copyText, showToast } from '../lib/toast.svelte';
+  import { appCfg } from '../lib/config.svelte';
+  import { isFavorite, ensureFavorite, toggleFavorite } from '../lib/favorite.svelte';
   import { delayedVisible } from '../lib/loading.svelte';
   import { qualityChoices } from '../lib/quality';
   import { player } from '../lib/player.svelte';
@@ -63,6 +65,7 @@
         known: true,
       };
     }
+    if (appCfg.s3Enabled) void ensureFavorite(trk);
     api
       .trackQualities(trk)
       .then((q) => (availability = q))
@@ -74,6 +77,15 @@
         };
       });
   });
+
+  async function toggleFav() {
+    if (!track) return;
+    try {
+      await toggleFavorite(track);
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
 
   function coverMenu(e: MouseEvent) {
     if (!track) return;
@@ -160,6 +172,22 @@
         >
           <HugeiconsIcon icon={icons.play} size={ICON_SIZE.inline} />
           {isBlocked(track.availability) ? t('不可播放') : t('播放')}
+        </button>
+        <button
+          class="fav"
+          class:on={isFavorite(track)}
+          onclick={toggleFav}
+          disabled={!appCfg.s3Enabled}
+          aria-label={isFavorite(track) ? t('取消喜欢') : t('喜欢')}
+          aria-pressed={isFavorite(track)}
+          title={appCfg.s3Enabled
+            ? isFavorite(track)
+              ? t('取消喜欢')
+              : t('喜欢（收藏到网盘）')
+            : t('喜欢存在网盘里')}
+        >
+          <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.inline} />
+          {isFavorite(track) ? t('取消喜欢') : t('喜欢')}
         </button>
         {#each choices as c (c.value)}
           <button

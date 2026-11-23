@@ -10,6 +10,7 @@ import { playTrack, playNext, addToQueue, inQueue } from './player.svelte';
 import { requestDownload } from './download.svelte';
 import { go } from './router.svelte';
 import { appCfg } from './config.svelte';
+import { ensureFavorite, isFavorite, toggleFavorite } from './favorite.svelte';
 import { showToast } from './toast.svelte';
 import { t } from './i18n.svelte';
 
@@ -33,13 +34,9 @@ export async function openTrackMenu(
   const y = e.clientY;
 
   const blocked = isBlocked(track.availability);
-  let fav = false;
   // 本地 SQLite 查一下收藏状态，决定菜单写「喜欢」还是「取消喜欢」
-  try {
-    fav = await api.favoriteCheck(track);
-  } catch {
-    /* 查不到就按未收藏处理 */
-  }
+  await ensureFavorite(track);
+  const fav = isFavorite(track);
 
   const items: MenuEntry[] = [
     {
@@ -81,15 +78,8 @@ export async function openTrackMenu(
             label: fav ? t('取消喜欢') : t('喜欢（收藏到网盘）'),
             icon: icons.favorite,
             run: async () => {
-              if (fav) {
-                await api.favoriteRemove(track);
-                opts.onFavorite?.(false);
-                showToast(t('已取消喜欢'));
-              } else {
-                await api.favoriteAdd(track);
-                opts.onFavorite?.(true);
-                showToast(t('已收藏到网盘'));
-              }
+              const next = await toggleFavorite(track);
+              opts.onFavorite?.(next);
             },
           },
         ]

@@ -29,11 +29,30 @@
   import { requestDownload, isPending } from '../lib/download.svelte';
   import { openMenuAt } from '../lib/contextmenu.svelte';
   import { go } from '../lib/router.svelte';
-  import { copyText } from '../lib/toast.svelte';
+  import { copyText, showToast } from '../lib/toast.svelte';
+  import { appCfg } from '../lib/config.svelte';
+  import { isFavorite, ensureFavorite, toggleFavorite } from '../lib/favorite.svelte';
   import { t } from '../lib/i18n.svelte';
   import QueuePanel from './QueuePanel.svelte';
 
   const pending = $derived(player.current ? isPending(player.current) : false);
+  const liked = $derived(player.current ? isFavorite(player.current) : false);
+
+  // 换歌后查一次收藏状态，红心跟着当前曲目走
+  $effect(() => {
+    const cur = player.current;
+    if (cur && appCfg.s3Enabled) void ensureFavorite(cur);
+  });
+
+  async function toggleFav() {
+    const cur = player.current;
+    if (!cur) return;
+    try {
+      await toggleFavorite(cur);
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
 
   let scrubbing = $state(false);
   let scrubVal = $state(0);
@@ -378,6 +397,22 @@
   </div>
 
   <div class="utils">
+    <button
+      class="ub"
+      class:on={liked}
+      onclick={toggleFav}
+      disabled={!player.current || !appCfg.s3Enabled}
+      title={!player.current
+        ? t('还没有播放中的歌曲')
+        : liked
+          ? t('取消喜欢')
+          : t('喜欢（收藏到网盘）')}
+      aria-label={liked ? t('取消喜欢') : t('喜欢')}
+      aria-pressed={liked}
+    >
+      <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.control} />
+    </button>
+
     <button
       class="ub"
       onclick={openLyrics}
