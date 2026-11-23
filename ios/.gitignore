@@ -1,8 +1,0 @@
-# iOS 原生：Pods 与生成物都不入库
-Pods/
-Podfile.lock
-*.xcodeproj/
-*.xcworkspace/
-DerivedData/
-Resources/*.bundle
-Rust/

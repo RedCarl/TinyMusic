@@ -1,2 +1,0 @@
-/* System-language strings (local network permission). Follows the system language, not the in-app setting. */
-"NSLocalNetworkUsageDescription" = "TinyMusic needs local network access to reach your S3-compatible storage on the LAN, or a development test server.";
