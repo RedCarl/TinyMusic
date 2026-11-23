@@ -22,16 +22,16 @@ TinyMusic 是一个 Windows / macOS 上的音乐客户端。它把「找歌 → 
     desktop/                 桌面端（Svelte 5 + Tauri 2）
     desktop/crates/core      平台无关底座（酷我 / 网易云 / S3 / 下载 / SQLite / 文件缓存 / ID3）
     desktop/crates/app       桌面业务层：AppState + dispatch
-    desktop/crates/server    本地 HTTP API（桌面调试 / S3 桩；iOS 不再链接）
+    desktop/crates/server    本地 HTTP API（桌面调试 / S3 桩）
     desktop/packages/shared  前端公共库（桌面仍在用：类型 / API 契约 / 队列 / 格式化 / 歌词 / EQ 预设）
     desktop/packages/theme   设计令牌单源（desktop/src/app.css；native 用系统色/材质）
     desktop/site             官网与隐私政策（GitHub Pages）
     desktop/tools            开发脚本
     desktop/docs             项目文档
-    ios/                     原生 iOS App（SwiftUI + Liquid Glass；S3 网盘播放 + 离线缓存）
-    ios/crates/ffi           S3-only C ABI（tm_start/tm_invoke/tm_stop/tm_free），iOS 直接 FFI
 
-一个 bug 只修一处：业务规则在 desktop/crates/app 或 desktop/packages/shared，两端口只做薄适配。
+iOS 客户端已独立到私有仓库，不再开源；本仓库只包含桌面端与官网。
+
+一个 bug 只修一处：业务规则在 desktop/crates/app 或 desktop/packages/shared。
 
 ---
 
