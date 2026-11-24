@@ -182,11 +182,19 @@ async fn s3_favorites_manifest_roundtrip() {
     };
     // 本地收藏：桶里有的、文件已经不在的、以及一条平台收藏
     storage
-        .add_favorite(&fav(&src_key, &format!("Song{suffix}"), &format!("Artist{suffix}")))
+        .add_favorite(&fav(
+            &src_key,
+            &format!("Song{suffix}"),
+            &format!("Artist{suffix}"),
+        ))
         .unwrap();
     let gone_key = format!("{folder}Gone{suffix} - Vanished{suffix}.mp3");
     storage
-        .add_favorite(&fav(&gone_key, &format!("Vanished{suffix}"), &format!("Gone{suffix}")))
+        .add_favorite(&fav(
+            &gone_key,
+            &format!("Vanished{suffix}"),
+            &format!("Gone{suffix}"),
+        ))
         .unwrap();
     storage
         .add_favorite(&Track {
@@ -211,7 +219,10 @@ async fn s3_favorites_manifest_roundtrip() {
         .map(|t| t.id.clone())
         .collect();
     assert!(ids.contains(&src_key), "喜欢要指向歌单里的原文件: {ids:?}");
-    assert!(ids.contains(&kept_key), "兜底目录里已有的那首不能掉: {ids:?}");
+    assert!(
+        ids.contains(&kept_key),
+        "兜底目录里已有的那首不能掉: {ids:?}"
+    );
     assert!(!ids.contains(&gone_key), "文件没了就不该再算喜欢: {ids:?}");
     assert!(
         list.iter().any(|t| t.provider == "netease"),
@@ -290,7 +301,6 @@ async fn s3_favorites_manifest_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// 超过阈值必须走分片：反向代理把 client_max_body_size 卡在 50MB 时，
 /// 整包 PUT 会被 413 挡掉，30MB 的曲子必须还能传上去。
 ///
@@ -307,8 +317,14 @@ async fn s3_multipart_upload_roundtrip() {
         .as_secs();
     let key = format!("TinyMusic/__multipart_test_{suffix}.bin");
 
-    // 30MB ＞ 24MB 阈值：必定走分片；内容可校验，避免「传上去是空的」
-    let size = 30 * 1024 * 1024;
+    // 默认 30MB ＞ 24MB 阈值：必定走分片；内容可校验，避免「传上去是空的」。
+    // 想验更大的文件（比如 60MB，反向代理 50m 上限下整包必被 413）：
+    //   S3_TEST_MB=60 cargo test -p tinymusic-core --test s3_live multipart -- --ignored
+    let size_mb: usize = std::env::var("S3_TEST_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+    let size = size_mb * 1024 * 1024;
     let body: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
     println!("UPLOAD {} bytes", body.len());
     s3.put_object(&key, body.clone(), "application/octet-stream")

@@ -19,6 +19,10 @@ const MULTIPART_THRESHOLD: usize = 24 * 1024 * 1024;
 /// 单个分片大小：留足余量，任何常见的 50MB 反代上限都不会碰到。
 const MULTIPART_PART_SIZE: usize = 16 * 1024 * 1024;
 
+/// 分片能缩到的下限。S3 协议要求「除最后一片外每片不小于 5MB」，
+/// 反代上限比这还小的话，分片也救不了，只能让用户去调服务端。
+const MULTIPART_MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+
 /// 网盘配置（全部来自设置页）
 #[derive(Debug, Clone, Default)]
 pub struct S3Config {
@@ -143,25 +147,63 @@ impl S3 {
     /// 写入一个对象。
     ///
     /// 大文件走分片上传（CreateMultipartUpload / UploadPart / CompleteMultipartUpload）：
-    /// 反向代理（openresty / nginx）常见配置把 `client_max_body_size` 卡在 50MB，
-    /// 整包 PUT 会直接被挡成 413。分片后单个请求只有 16MB。
+    /// 反向代理（openresty / nginx）常把 `client_max_body_size` 卡住，整包 PUT 会被
+    /// 直接挡成 413，分片后单个请求只有 16MB。
+    ///
+    /// 分片也不总是安全区：代理上限可能被配成 10MB、8MB。所以整包被 413 挡回来时
+    /// 自动改走分片，分片被挡回来时把分片减半，最小到 5MB（S3 协议下限）。
     pub async fn put_object(&self, key: &str, body: Vec<u8>, content_type: &str) -> Result<()> {
-        if body.len() > MULTIPART_THRESHOLD {
-            self.put_object_multipart(key, body, content_type).await
-        } else {
-            self.put_object_single(key, &body, content_type).await
+        let (url, path) = self.object_path(key)?;
+        let mut last_too_large: Option<TooLarge> = None;
+
+        // 体积不大就先整包 PUT：一次请求，比「初始化 + 逐片 + 合并」省事
+        if body.len() <= MULTIPART_THRESHOLD {
+            match self
+                .put_object_single(&url, &path, &body, content_type)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(StepError::Fatal(e)) => return Err(e),
+                Err(StepError::TooLarge(t)) => last_too_large = Some(t),
+            }
         }
+
+        // 整包不行 / 文件本来就大：16MB → 8MB → 5MB，被 413 挡回来就缩一档
+        let candidates = part_size_candidates(body.len());
+        for part_size in &candidates {
+            match self
+                .put_object_multipart(&url, &path, &body, content_type, *part_size)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(StepError::Fatal(e)) => return Err(e),
+                Err(StepError::TooLarge(t)) => last_too_large = Some(t),
+            }
+        }
+
+        Err(match last_too_large {
+            Some(t) => too_large_error(&self.cfg.endpoint, &t, &candidates),
+            None => Error::Http(format!(
+                "S3 上传失败：{} 字节的对象整包与分片都没走通",
+                body.len()
+            )),
+        })
     }
 
     /// 整包 PUT（小文件：封面、歌词、收藏标记等）
-    async fn put_object_single(&self, key: &str, body: &[u8], content_type: &str) -> Result<()> {
-        let (url, path) = self.object_path(key)?;
+    async fn put_object_single(
+        &self,
+        url: &str,
+        path: &str,
+        body: &[u8],
+        content_type: &str,
+    ) -> StepResult<()> {
         let payload_hash = sha256_hex(body);
-        let headers = self.sign("PUT", &path, "", &payload_hash, &[])?;
+        let headers = self.sign("PUT", path, "", &payload_hash, &[])?;
 
         let mut req = self
             .http
-            .put(&url)
+            .put(url)
             .header(reqwest::header::CONTENT_TYPE, content_type)
             .header(reqwest::header::CONTENT_LENGTH, body.len().to_string());
         for (k, v) in &headers {
@@ -171,34 +213,38 @@ impl S3 {
             .body(body.to_vec())
             .send()
             .await
-            .map_err(|e| Error::Http(format!("S3 上传请求失败：{}", e)))?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
+            .map_err(|e| StepError::Fatal(Error::Http(format!("S3 上传请求失败：{}", e))))?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
             let text = resp.text().await.unwrap_or_default();
-            return Err(upload_error(status, &text));
+            return Err(step_error(status, body.len(), "整包 PUT".into(), text));
         }
         Ok(())
     }
 
-    /// 分片上传：初始化 → 逐段 PUT → 合并；任一步失败都 abort，避免留下孤儿分片
+    /// 一次完整的分片上传：初始化 → 逐段 PUT → 合并；任一步失败都 abort，避免留下孤儿分片。
+    ///
+    /// 413 单独往回传：那是「这一片太大」，换个更小的 `part_size` 再来一遍就行。
     async fn put_object_multipart(
         &self,
-        key: &str,
-        body: Vec<u8>,
+        url: &str,
+        path: &str,
+        body: &[u8],
         content_type: &str,
-    ) -> Result<()> {
-        let (url, path) = self.object_path(key)?;
-        let upload_id = self.initiate_multipart(&url, &path, content_type).await?;
-        match self.upload_parts(&url, &path, &upload_id, &body).await {
-            Ok(parts) => {
-                self.complete_multipart(&url, &path, &upload_id, &parts)
-                    .await
-            }
-            Err(e) => {
-                let _ = self.abort_multipart(&url, &path, &upload_id).await;
-                Err(e)
-            }
+        part_size: usize,
+    ) -> StepResult<()> {
+        let upload_id = self.initiate_multipart(url, path, content_type).await?;
+        let done = match self
+            .upload_parts(url, path, &upload_id, body, part_size)
+            .await
+        {
+            Ok(parts) => self.complete_multipart(url, path, &upload_id, &parts).await,
+            Err(e) => Err(e),
+        };
+        if done.is_err() {
+            let _ = self.abort_multipart(url, path, &upload_id).await;
         }
+        done
     }
 
     async fn initiate_multipart(
@@ -206,7 +252,7 @@ impl S3 {
         url: &str,
         path: &str,
         content_type: &str,
-    ) -> Result<String> {
+    ) -> StepResult<String> {
         let empty_hash = sha256_hex(&[]);
         // 规范查询串里空值参数写成 `uploads=`
         let headers = self.sign("POST", path, "uploads=", &empty_hash, &[])?;
@@ -221,17 +267,17 @@ impl S3 {
         let resp = req
             .send()
             .await
-            .map_err(|e| Error::Http(format!("S3 分片初始化失败：{}", e)))?;
+            .map_err(|e| StepError::Fatal(Error::Http(format!("S3 分片初始化失败：{}", e))))?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         if !(200..300).contains(&status) {
-            return Err(upload_error(status, &text));
+            return Err(step_error(status, 0, "分片初始化".into(), text));
         }
         extract_tag(&text, "UploadId").ok_or_else(|| {
-            Error::Http(format!(
+            StepError::Fatal(Error::Http(format!(
                 "S3 分片初始化没有返回 UploadId：{}",
                 text.chars().take(200).collect::<String>()
-            ))
+            )))
         })
     }
 
@@ -241,10 +287,12 @@ impl S3 {
         path: &str,
         upload_id: &str,
         body: &[u8],
-    ) -> Result<Vec<(u32, String)>> {
+        part_size: usize,
+    ) -> StepResult<Vec<(u32, String)>> {
         let encoded_id = uri_encode(upload_id, true);
+        let total = body.len().div_ceil(part_size.max(1));
         let mut parts = Vec::new();
-        for (idx, chunk) in body.chunks(MULTIPART_PART_SIZE).enumerate() {
+        for (idx, chunk) in body.chunks(part_size).enumerate() {
             let number = (idx + 1) as u32;
             let query = format!("partNumber={}&uploadId={}", number, encoded_id);
             let payload_hash = sha256_hex(chunk);
@@ -256,22 +304,27 @@ impl S3 {
             for (k, v) in &headers {
                 req = req.header(k.as_str(), v);
             }
-            let resp = req
-                .body(chunk.to_vec())
-                .send()
-                .await
-                .map_err(|e| Error::Http(format!("S3 分片 {} 上传失败：{}", number, e)))?;
+            let resp = req.body(chunk.to_vec()).send().await.map_err(|e| {
+                StepError::Fatal(Error::Http(format!("S3 分片 {} 上传失败：{}", number, e)))
+            })?;
             let status = resp.status().as_u16();
             if !(200..300).contains(&status) {
                 let text = resp.text().await.unwrap_or_default();
-                return Err(upload_error(status, &text));
+                return Err(step_error(
+                    status,
+                    chunk.len(),
+                    format!("分片 {}/{}", number, total),
+                    text,
+                ));
             }
             let etag = resp
                 .headers()
                 .get(reqwest::header::ETAG)
                 .and_then(|v| v.to_str().ok())
                 .map(|v| v.to_string())
-                .ok_or_else(|| Error::Http(format!("S3 分片 {} 没有返回 ETag", number)))?;
+                .ok_or_else(|| {
+                    StepError::Fatal(Error::Http(format!("S3 分片 {} 没有返回 ETag", number)))
+                })?;
             parts.push((number, etag));
         }
         Ok(parts)
@@ -283,8 +336,9 @@ impl S3 {
         path: &str,
         upload_id: &str,
         parts: &[(u32, String)],
-    ) -> Result<()> {
+    ) -> StepResult<()> {
         let xml = complete_multipart_body(parts);
+        let xml_len = xml.len();
         let payload_hash = sha256_hex(xml.as_bytes());
         let query = format!("uploadId={}", uri_encode(upload_id, true));
         let headers = self.sign("POST", path, &query, &payload_hash, &[])?;
@@ -292,7 +346,7 @@ impl S3 {
             .http
             .post(format!("{}?{}", url, query))
             .header(reqwest::header::CONTENT_TYPE, "application/xml")
-            .header(reqwest::header::CONTENT_LENGTH, xml.len().to_string());
+            .header(reqwest::header::CONTENT_LENGTH, xml_len.to_string());
         for (k, v) in &headers {
             req = req.header(k.as_str(), v);
         }
@@ -300,12 +354,12 @@ impl S3 {
             .body(xml)
             .send()
             .await
-            .map_err(|e| Error::Http(format!("S3 分片合并失败：{}", e)))?;
+            .map_err(|e| StepError::Fatal(Error::Http(format!("S3 分片合并失败：{}", e))))?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         // S3 允许在 200 响应里返回错误 XML
         if !(200..300).contains(&status) || text.contains("<Error>") {
-            return Err(upload_error(status, &text));
+            return Err(step_error(status, xml_len, "分片合并".into(), text));
         }
         Ok(())
     }
@@ -704,19 +758,98 @@ fn complete_multipart_body(parts: &[(u32, String)]) -> String {
     xml
 }
 
-/// 上传失败时的报错：413 单独给出可操作的提示
-fn upload_error(status: u16, body: &str) -> Error {
-    let brief: String = body.chars().take(240).collect();
-    if status == 413 {
-        Error::Http(format!(
-            "S3 上传失败（HTTP 413）：请求体超过服务器上限。前面若有 nginx/openresty，\
-             把 client_max_body_size 调大（本端已按 {}MB 分片）。响应：{}",
-            MULTIPART_PART_SIZE / 1024 / 1024,
-            brief
-        ))
-    } else {
-        Error::Http(format!("S3 上传失败（HTTP {}）：{}", status, brief))
+/// 分片大小候选：先大后小。
+///
+/// 反代上限未知，先用 16MB；被 413 挡回来就减半，最小到 5MB
+/// （S3 协议要求除最后一片外每片都不小于 5MB）。
+fn part_size_candidates(body_len: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    for size in [
+        MULTIPART_PART_SIZE,
+        MULTIPART_PART_SIZE / 2,
+        MULTIPART_MIN_PART_SIZE,
+    ] {
+        // 比整个文件还大的分片等于整包，试了也是白试
+        if size >= MULTIPART_MIN_PART_SIZE && size < body_len && !out.contains(&size) {
+            out.push(size);
+        }
     }
+    out
+}
+
+/// 上传单步的错误分类：413 是「这次请求太大」，缩分片还能救；其余缩了也没用。
+#[derive(Debug)]
+enum StepError {
+    TooLarge(TooLarge),
+    Fatal(Error),
+}
+
+/// 上传单步的结果：错误已经被分成「能缩分片重试」和「只能直接报」两类
+type StepResult<T> = std::result::Result<T, StepError>;
+
+impl From<Error> for StepError {
+    fn from(e: Error) -> Self {
+        Self::Fatal(e)
+    }
+}
+
+/// 一次 413 的现场：哪个请求、多大、服务端回了什么
+#[derive(Debug)]
+struct TooLarge {
+    what: String,
+    request_bytes: usize,
+    response: String,
+}
+
+fn step_error(status: u16, request_bytes: usize, what: String, body: String) -> StepError {
+    if status == 413 {
+        StepError::TooLarge(TooLarge {
+            what,
+            request_bytes,
+            response: body,
+        })
+    } else {
+        let brief: String = body.chars().take(240).collect();
+        StepError::Fatal(Error::Http(format!(
+            "S3 上传失败（HTTP {}）：{}",
+            status, brief
+        )))
+    }
+}
+
+fn mb(bytes: usize) -> String {
+    format!("{:.1}MB", bytes as f64 / 1024.0 / 1024.0)
+}
+
+/// 分片已经缩到底还是 413：说清楚「哪个请求、多大」，以及该改哪里。
+///
+/// 旧报错不管请求是整包还是某一片，永远说「本端已按 16MB 分片」，
+/// 用户照着调了服务端还是失败，还得先猜是哪一步被挡的。
+fn too_large_error(endpoint: &str, last: &TooLarge, tried: &[usize]) -> Error {
+    let mut msg = format!(
+        "S3 上传失败（HTTP 413）：{} 的请求体 {} 超过服务端上限（目标 {}）。",
+        last.what,
+        mb(last.request_bytes),
+        endpoint.trim()
+    );
+    if tried.is_empty() {
+        msg.push_str(&format!(
+            "文件只有 {}，比分片下限 {} 还小，没法再拆。",
+            mb(last.request_bytes),
+            mb(MULTIPART_MIN_PART_SIZE)
+        ));
+    } else {
+        msg.push_str(&format!(
+            "已依次按 {} 分片重试仍被拒；分片最小只能到 {}（S3 协议限制）。",
+            tried.iter().map(|s| mb(*s)).collect::<Vec<_>>().join(" / "),
+            mb(MULTIPART_MIN_PART_SIZE)
+        ));
+    }
+    msg.push_str(
+        "请在反向代理（nginx / openresty）上把 client_max_body_size 调到 1g 以上         （至少要大于单片大小），并确认 client_body_buffer_size 不小于单次请求体。响应：",
+    );
+    msg.push_str(&last.response.chars().take(240).collect::<String>());
+    Error::Http(msg)
 }
 
 /// AWS 风格 percent-encoding：只保留 unreserved 字符（`/` 按需保留）
@@ -859,12 +992,76 @@ mod tests {
 
     #[test]
     fn explains_413_as_proxy_limit() {
-        let err = upload_error(413, "<html>413</html>").to_string();
+        let err = too_large_error(
+            "https://rustfs.example.com",
+            &TooLarge {
+                what: "分片 2/4".into(),
+                request_bytes: MULTIPART_MIN_PART_SIZE,
+                response: "<html>413</html>".into(),
+            },
+            &[
+                MULTIPART_PART_SIZE,
+                MULTIPART_PART_SIZE / 2,
+                MULTIPART_MIN_PART_SIZE,
+            ],
+        )
+        .to_string();
         assert!(err.contains("client_max_body_size"));
-        assert!(err.contains("16MB"));
-        let other = upload_error(403, "AccessDenied").to_string();
-        assert!(other.contains("HTTP 403"));
-        assert!(!other.contains("client_max_body_size"));
+        assert!(err.contains("16.0MB"));
+        // 哪一步被挡的要说清楚，不能再笼统说「已按 16MB 分片」
+        assert!(err.contains("分片 2/4"));
+        assert!(err.contains("5.0MB"));
+        // 服务端返回的 HTML 也带上，方便对照是哪一层挡的
+        assert!(err.contains("<html>413</html>"));
+        // 打到哪个 endpoint 也要写出来：同样报 413，换个地址就是另一层代理
+        assert!(err.contains("rustfs.example.com"));
+    }
+
+    #[test]
+    fn tiny_body_413_says_cannot_split_further() {
+        let err = too_large_error(
+            "https://rustfs.example.com",
+            &TooLarge {
+                what: "整包 PUT".into(),
+                request_bytes: 3 * 1024 * 1024,
+                response: String::new(),
+            },
+            &[],
+        )
+        .to_string();
+        assert!(err.contains("没法再拆"));
+        assert!(err.contains("client_max_body_size"));
+    }
+
+    #[test]
+    fn non_413_upload_errors_stay_plain() {
+        match step_error(403, 12, "整包 PUT".into(), "AccessDenied".into()) {
+            StepError::Fatal(e) => {
+                let text = e.to_string();
+                assert!(text.contains("HTTP 403"));
+                assert!(!text.contains("client_max_body_size"));
+            }
+            StepError::TooLarge(_) => panic!("403 不该当成体积问题"),
+        }
+    }
+
+    #[test]
+    fn shrinks_part_size_when_413() {
+        let mib = 1024 * 1024;
+        assert_eq!(
+            part_size_candidates(30 * mib),
+            vec![16 * mib, 8 * mib, 5 * mib],
+            "大文件先 16MB，再 8MB，最后 5MB"
+        );
+        assert_eq!(
+            part_size_candidates(6 * mib),
+            vec![5 * mib],
+            "只有 5MB 一档"
+        );
+        assert!(
+            part_size_candidates(3 * mib).is_empty(),
+            "比分片下限还小的文件拆不动"
+        );
     }
 
     #[test]

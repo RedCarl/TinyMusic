@@ -4,17 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>TinyMusic — 4.5 MB 的桌面音乐客户端</title>
-<meta name="description" content="TinyMusic 是一个 4.5 MB 的桌面音乐客户端：搜索、试听、下载、歌词、网盘。基于 Tauri 2 + Svelte 5 + Rust，开源 MIT。" />
+<meta name="description" content="TinyMusic 是一个 4.5 MB 的桌面音乐客户端：搜索、试听、下载、歌词、网盘。基于 Tauri 2 + Svelte 5 + Rust。" />
 <meta name="theme-color" content="#0e0f10" media="(prefers-color-scheme: dark)" />
 <meta name="theme-color" content="#f6f6f7" media="(prefers-color-scheme: light)" />
 <link rel="icon" href="assets/icon.png" type="image/png" />
-<link rel="canonical" href="https://redcarl.github.io/TinyMusic/" />
+<link rel="canonical" href="https://tinymusic.carljoy.cn/" />
 
 <meta property="og:type" content="website" />
-<meta property="og:url" content="https://redcarl.github.io/TinyMusic/" />
+<meta property="og:url" content="https://tinymusic.carljoy.cn/" />
 <meta property="og:title" content="TinyMusic — 4.5 MB 的桌面音乐客户端" />
 <meta property="og:description" content="搜索、试听、下载、歌词、网盘，都在一个窗口里。" />
-<meta property="og:image" content="https://redcarl.github.io/TinyMusic/assets/screenshot.jpg" />
+<meta property="og:image" content="https://tinymusic.carljoy.cn/assets/screenshot.jpg" />
 
 <style>
 :root {
@@ -265,14 +265,14 @@ h1 em {
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
-/* ---------- 下载 ---------- */
+/* ---------- 能做什么 ---------- */
 
-.download {
+.features {
   padding: 56px 0 40px;
   border-top: 1px solid var(--line-soft);
 }
 
-.download h2 {
+.features h2 {
   margin: 0;
   font-size: 22px;
   letter-spacing: -0.02em;
@@ -285,17 +285,16 @@ h1 em {
   color: var(--faint);
 }
 
-.platforms {
+.grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
 }
 
-.plat {
-  position: relative;
+.fcard {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   padding: 20px 22px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
@@ -303,79 +302,40 @@ h1 em {
   transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
 }
 
-.plat:hover {
+.fcard:hover {
   border-color: var(--line);
   background: var(--panel-hi);
   transform: translateY(-2px);
 }
 
-.plat.rec {
-  border-color: var(--brand-line);
-  background: linear-gradient(180deg, var(--brand-soft), transparent 70%), var(--panel);
+.fcard .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 2px;
+  border: 1px solid var(--brand-line);
+  border-radius: 10px;
+  background: var(--brand-soft);
+  color: var(--brand);
 }
 
-.plat .os {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.fcard .ico svg { width: 17px; height: 17px; }
+
+.fcard h3 {
+  margin: 0;
   font-size: 15px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.plat .os svg { width: 17px; height: 17px; color: var(--muted); }
-.plat.rec .os svg { color: var(--brand); }
-
-.plat .file {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--faint);
-  word-break: break-all;
-}
-
-.plat .size {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--faint);
-}
-
-.plat .tag {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: var(--brand);
-  color: var(--brand-ink);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.hint {
-  margin: 18px 0 0;
-  font-size: 12.5px;
-  color: var(--faint);
-}
-
-.hint a {
+.fcard p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.72;
   color: var(--muted);
-  border-bottom: 1px solid var(--line);
 }
-.hint a:hover { color: var(--fg); }
-
-.hint + .hint { margin-top: 6px; }
-
-.linkbtn {
-  border: 0;
-  padding: 0;
-  background: none;
-  font: inherit;
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-}
-
-.linkbtn:hover { color: var(--fg); }
 
 footer {
   padding: 28px 0 48px;
@@ -410,7 +370,11 @@ footer a:hover { color: var(--fg); }
     padding: 32px 0 56px;
   }
   .shot { order: 2; }
-  .platforms { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {
@@ -432,7 +396,6 @@ footer a:hover { color: var(--fg); }
     </a>
     <div class="nav-right">
       <a class="nav-link" href="tinymusic/"><span data-zh>iOS 版</span><span data-en hidden>iOS app</span></a>
-      <a class="nav-link" href="https://github.com/RedCarl/TinyMusic" target="_blank" rel="noopener">GitHub ↗</a>
       <div class="lang" role="group" aria-label="Language / 语言">
         <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
         <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
@@ -453,17 +416,13 @@ footer a:hover { color: var(--fg); }
         </p>
 
         <div class="actions">
-          <a class="btn btn-primary" id="hero-dl" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/></svg>
-            <span id="hero-dl-label">下载最新版本</span>
-          </a>
-          <a class="btn btn-ghost" href="https://github.com/RedCarl/TinyMusic" target="_blank" rel="noopener">
-            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-            <span data-zh>源代码</span><span data-en hidden>Source</span>
+          <a class="btn btn-primary" href="tinymusic/">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h15"/><path d="m13.5 6 6 6-6 6"/></svg>
+            <span data-zh>TinyMusic iOS</span><span data-en hidden>TinyMusic iOS</span>
           </a>
         </div>
 
-        <p class="meta" id="meta">Windows 10/11 · macOS 11+ · 自动更新</p>
+        <p class="meta"><span data-zh>Windows 10/11 · macOS 11+ · 桌面版</span><span data-en hidden>Windows 10/11 · macOS 11+ · Desktop app</span></p>
       </div>
 
       <figure class="shot">
@@ -472,64 +431,53 @@ footer a:hover { color: var(--fg); }
       </figure>
     </section>
 
-    <section class="download" id="download">
-      <h2><span data-zh>下载</span><span data-en hidden>Download</span></h2>
-      <p class="sub" id="sub">安装包约 3–4 MB，新版本可在应用内直接升级。</p>
+    <section class="features" id="features">
+      <h2><span data-zh>能做什么</span><span data-en hidden>What it does</span></h2>
+      <p class="sub"><span data-zh>找歌、听歌、把它们留下来，都在同一个窗口里。</span><span data-en hidden>Finding, playing and keeping your music — all in one window.</span></p>
 
-      <div class="platforms">
-        <a class="plat" data-os="windows" data-asset="exe" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
-          <span class="tag" data-rec hidden><span data-zh>推荐</span><span data-en hidden>Best</span></span>
-          <span class="os">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.6 10.4 4.6v6.8H3V5.6Zm0 7.4h7.4v6.8L3 18.8V13Zm9-8.7L21 3v8.4h-9V4.3Zm0 8.7h9V21l-9-1.3V13Z"/></svg>
-            Windows
-          </span>
-          <span class="file" data-file="exe">Windows 10 / 11 · x64</span>
-          <span class="size" data-size="exe"></span>
-        </a>
+      <div class="grid">
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></svg></span>
+          <h3><span data-zh>搜索与浏览</span><span data-en hidden>Search and browse</span></h3>
+          <p><span data-zh>歌曲、专辑、歌手、歌单一起搜，结果按热度排序。歌手页给头像、简介和专辑，点封面直接进专辑整张播放。</span><span data-en hidden>Songs, albums, artists and playlists in one search, ranked by popularity. Artist pages carry the photo, bio and discography; tap a cover to play the whole album.</span></p>
+        </div>
 
-        <a class="plat" data-os="mac" data-asset="dmg-arm" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
-          <span class="tag" data-rec hidden><span data-zh>推荐</span><span data-en hidden>Best</span></span>
-          <span class="os">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.7.8-3.4.8-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.3-2.5 1.3-2.6-.1 0-2.6-1-2.6-3.8ZM14.2 5.7c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.7-1.3Z"/></svg>
-            <span data-zh>macOS · Apple 芯片</span><span data-en hidden>macOS · Apple silicon</span>
-          </span>
-          <span class="file" data-file="dmg-arm">macOS 11+ · arm64</span>
-          <span class="size" data-size="dmg-arm"></span>
-        </a>
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5.2v13.6L18 12z"/></svg></span>
+          <h3><span data-zh>播放与歌词</span><span data-en hidden>Playback and lyrics</span></h3>
+          <p><span data-zh>悬浮播放器管随机、循环、音量和队列；全屏歌词逐行高亮，点任意一句就从那里开始播。重开应用会恢复上次的曲目和进度，但不会突然出声。</span><span data-en hidden>A floating player handles shuffle, repeat, volume and the queue. Full-screen lyrics highlight line by line, and any line jumps there. Reopening restores your last track and position without suddenly making noise.</span></p>
+        </div>
 
-        <a class="plat" data-os="mac-intel" data-asset="dmg-x64" href="https://github.com/RedCarl/TinyMusic/releases/latest" rel="noopener">
-          <span class="tag" data-rec hidden><span data-zh>推荐</span><span data-en hidden>Best</span></span>
-          <span class="os">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.7c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.7.8-3.4.8-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7c1.2 0 2-1.1 2.8-2.2.9-1.3 1.3-2.5 1.3-2.6-.1 0-2.6-1-2.6-3.8ZM14.2 5.7c.6-.8 1.1-1.9 1-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2-.5 2.7-1.3Z"/></svg>
-            macOS · Intel
-          </span>
-          <span class="file" data-file="dmg-x64">macOS 11+ · x64</span>
-          <span class="size" data-size="dmg-x64"></span>
-        </a>
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h2"/><path d="M9 7.5v9"/><path d="M14 4.5v15"/><path d="M19 9v6"/></svg></span>
+          <h3><span data-zh>音质</span><span data-en hidden>Audio quality</span></h3>
+          <p><span data-zh>标准 128k、高品质 320k、无损 FLAC。能不能播在点之前就判断好，没无损的曲目直接禁用；文件实际被降级了也会标出来。</span><span data-en hidden>128k standard, 320k high quality and lossless FLAC. Availability is decided before you press play, tracks without lossless disable the option, and a downgraded file is labelled as such.</span></p>
+        </div>
+
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h9"/><circle cx="16" cy="8" r="2.2"/><path d="M20 16h-9"/><circle cx="8" cy="16" r="2.2"/></svg></span>
+          <h3><span data-zh>10 段均衡器</span><span data-en hidden>10-band equaliser</span></h3>
+          <p><span data-zh>32 Hz – 16 kHz 十段图形均衡，实时作用于当前播放；12 种预设加上前级增益，手动调过会自动记为「自定义」并保存。</span><span data-en hidden>A 10-band graphic EQ from 32 Hz to 16 kHz that applies live. Twelve presets plus pre-gain; manual tweaks are saved as "Custom".</span></p>
+        </div>
+
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 18.5h9.2a3.6 3.6 0 0 0 .4-7.18 5 5 0 0 0-9.75-.85A3.9 3.9 0 0 0 7.5 18.5Z"/><path d="M12 10.5v4.2"/><path d="m10.2 12.9 1.8 1.8 1.8-1.8"/></svg></span>
+          <h3><span data-zh>下载与网盘</span><span data-en hidden>Downloads and cloud storage</span></h3>
+          <p><span data-zh>下载时把封面和歌词一起带上，专辑、歌单、搜索结果都能「下载全部」；也可以直接传进你自己的 S3 网盘（AWS S3、MinIO、R2），「喜欢」就是桶里的一份 favorites.json。</span><span data-en hidden>Downloads bring the cover and lyrics along, and albums, playlists and search results all support "download all". Files can also go straight into your own S3-compatible bucket (AWS S3, MinIO, R2), where favourites live as a favorites.json manifest.</span></p>
+        </div>
+
+        <div class="fcard">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.8" width="17" height="11.8" rx="2"/><path d="M9.5 20h5"/><path d="M12 16.6V20"/></svg></span>
+          <h3><span data-zh>托盘与后台</span><span data-en hidden>Tray and background</span></h3>
+          <p><span data-zh>关窗口默认收进系统托盘，播放不中断；网盘导入这类任务在后台排队跑，不用守着窗口。主题跟随系统，也能手动指定。</span><span data-en hidden>Closing the window tucks the app into the tray and playback keeps going. Jobs such as cloud imports queue up in the background. The theme follows the system, or you can pin it.</span></p>
+        </div>
       </div>
-
-      <p class="hint">
-        <span id="dl-route">下载经由 gh-proxy.com 镜像加速</span> ·
-        <button class="linkbtn" id="mode" type="button">改用 GitHub 直连</button>
-      </p>
-
-      <p class="hint">
-        <span data-zh>macOS 首次打开若提示「已损坏」，在 Finder 里右键 → 打开。全部历史版本见</span><span data-en hidden>If macOS claims the app is "damaged" on first launch, right-click it in Finder and choose Open. Every past version is on</span>
-        <a href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">GitHub Releases</a>.
-      </p>
     </section>
   </main>
 
   <footer>
     <div class="row">
-      <span>© 2026 TinyMusic · MIT License</span>
-      <span>
-        <a href="tinymusic/"><span data-zh>iOS 版</span><span data-en hidden>iOS app</span></a> ·
-        <a href="tinymusic/support.html"><span data-zh>支持</span><span data-en hidden>Support</span></a> ·
-        <a href="tinymusic/privacy.html"><span data-zh>隐私政策</span><span data-en hidden>Privacy</span></a> ·
-        <a href="tinymusic/terms.html"><span data-zh>内容声明</span><span data-en hidden>Terms</span></a> ·
-        <a href="https://github.com/RedCarl/TinyMusic/releases" target="_blank" rel="noopener">Releases</a>
-      </span>
+      <span>© 2026 Sunlei　|　<a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">鄂ICP备2024059854号-3A</a></span>
     </div>
     <p class="disclaim"><span data-zh>仅实现公开 HTTP 接口，不包含、不分发任何音频资源。</span><span data-en hidden>Implements public HTTP endpoints only; no audio content is bundled or distributed.</span></p>
   </footer>
@@ -539,148 +487,46 @@ footer a:hover { color: var(--fg); }
 <script>
 (function () {
   var KEY = 'tinymusic-lang';
-  var REPO = 'RedCarl/TinyMusic';
-  var LATEST = 'https://github.com/' + REPO + '/releases/latest';
 
-  /* 下载加速：只给 /releases/download/ 的附件直链加前缀，
-     releases 页面之类的 HTML 链接保持原样。 */
-  var MIRROR = 'https://gh-proxy.com/';
-
-  /* 所有由脚本写入的文案都在这里。切换语言时 apply() 关掉旧语言，
-     render() 再按当前语言把动态文本重写一遍。 */
+  /* 由脚本写入的文案都在这里：标题、描述、og、截图 alt。
+     页面里的可见文本用 data-zh / data-en 配对，apply() 直接切。 */
   var COPY = {
     zh: {
       title: 'TinyMusic — 4.5 MB 的桌面音乐客户端',
-      desc: 'TinyMusic 是一个 4.5 MB 的桌面音乐客户端：搜索、试听、下载、歌词、网盘。基于 Tauri 2 + Svelte 5 + Rust，开源 MIT。',
+      desc: 'TinyMusic 是一个 4.5 MB 的桌面音乐客户端：搜索、试听、下载、歌词、网盘。基于 Tauri 2 + Svelte 5 + Rust。',
       ogTitle: 'TinyMusic — 4.5 MB 的桌面音乐客户端',
       ogDesc: '搜索、试听、下载、歌词、网盘，都在一个窗口里。',
-      shotAlt: 'TinyMusic 主界面：左侧导航、每日推荐、歌单与底部播放器',
-      hero: '下载最新版本',
-      heroWin: '下载 Windows 版',
-      heroMac: '下载 macOS 版',
-      meta: function (tag) {
-        return (tag ? tag + ' · ' : '') + 'Windows 10/11 · macOS 11+ · 自动更新';
-      },
-      sub: function (tag) {
-        return tag
-          ? tag + ' · 安装包 3–4 MB，新版本可在应用内直接升级。'
-          : '安装包约 3–4 MB，新版本可在应用内直接升级。';
-      },
-      subFail: function () {
-        return '安装包约 3–4 MB。版本信息获取失败，可直接前往 Releases 下载。';
-      },
-      route: function (mirror) {
-        return mirror ? '下载经由 gh-proxy.com 镜像加速' : '下载直连 GitHub';
-      },
-      mode: function (mirror) {
-        return mirror ? '改用 GitHub 直连' : '改用镜像加速';
-      }
+      shotAlt: 'TinyMusic 主界面：左侧导航、每日推荐、歌单与底部播放器'
     },
     en: {
       title: 'TinyMusic — a 4.5 MB desktop music client',
-      desc: 'TinyMusic is a 4.5 MB desktop music client: search, preview, download, lyrics and cloud storage. Built with Tauri 2 + Svelte 5 + Rust, open source under MIT.',
+      desc: 'TinyMusic is a 4.5 MB desktop music client: search, preview, download, lyrics and cloud storage. Built with Tauri 2 + Svelte 5 + Rust.',
       ogTitle: 'TinyMusic — a 4.5 MB desktop music client',
       ogDesc: 'Search, preview, download, lyrics and cloud storage — all in one window.',
-      shotAlt: 'TinyMusic main window: sidebar, daily picks, playlists and the player at the bottom',
-      hero: 'Download latest',
-      heroWin: 'Download for Windows',
-      heroMac: 'Download for macOS',
-      meta: function (tag) {
-        return (tag ? tag + ' · ' : '') + 'Windows 10/11 · macOS 11+ · auto-update';
-      },
-      sub: function (tag) {
-        return tag
-          ? tag + ' · installer 3–4 MB, new versions update in place from inside the app.'
-          : 'The installer is about 3–4 MB; new versions update in place from inside the app.';
-      },
-      subFail: function () {
-        return 'The installer is about 3–4 MB. Could not load version info — grab it straight from Releases.';
-      },
-      route: function (mirror) {
-        return mirror ? 'Downloads are accelerated through the gh-proxy.com mirror' : 'Downloads go straight to GitHub';
-      },
-      mode: function (mirror) {
-        return mirror ? 'Use direct GitHub links' : 'Use the mirror';
-      }
+      shotAlt: 'TinyMusic main window: sidebar, daily picks, playlists and the player at the bottom'
     }
   };
 
-  var state = {
-    lang: 'zh',
-    mode: 'mirror',
-    guess: '',
-    tag: '',
-    failed: false,
-    heroKind: 'default'
-  };
-  var links = [];
-
-  function copy() { return COPY[state.lang] || COPY.zh; }
-  function byId(id) { return document.getElementById(id); }
-  function setText(id, text) {
-    var el = byId(id);
-    if (el) el.textContent = text;
-  }
-
-  function accel(url) {
-    return /\/releases\/download\//.test(url) ? MIRROR + url : url;
-  }
-
-  function bind(el, url) {
-    if (!el || !url) return;
-    for (var i = 0; i < links.length; i++) {
-      if (links[i].el === el) {
-        links[i].direct = url;
-        el.href = state.mode === 'mirror' ? accel(url) : url;
-        return;
-      }
-    }
-    links.push({ el: el, direct: url });
-    el.href = state.mode === 'mirror' ? accel(url) : url;
-  }
-
-  /* 只负责动态文本，样式/隐藏交给 apply() 与 mark()。 */
-  function render() {
-    var t = copy();
-    setText('hero-dl-label',
-      state.heroKind === 'windows' ? t.heroWin :
-      state.heroKind === 'mac' ? t.heroMac : t.hero);
-    setText('meta', t.meta(state.tag));
-    setText('sub', state.failed ? t.subFail() : t.sub(state.tag));
-    setText('dl-route', t.route(state.mode === 'mirror'));
-    setText('mode', t.mode(state.mode === 'mirror'));
-    var shot = byId('shot');
-    if (shot) shot.alt = t.shotAlt;
-  }
-
-  function applyMode() {
-    links.forEach(function (l) {
-      l.el.href = state.mode === 'mirror' ? accel(l.direct) : l.direct;
-    });
-    render();
-  }
+  var metaDesc = document.querySelector('meta[name="description"]');
+  var ogTitle = document.querySelector('meta[property="og:title"]');
+  var ogDesc = document.querySelector('meta[property="og:description"]');
+  var shot = document.getElementById('shot');
 
   function apply(lang) {
-    state.lang = lang === 'en' ? 'en' : 'zh';
-    var isEN = state.lang === 'en';
+    var isEN = lang === 'en';
     document.documentElement.lang = isEN ? 'en' : 'zh-CN';
     document.querySelectorAll('[data-zh]').forEach(function (el) { el.hidden = isEN; });
     document.querySelectorAll('[data-en]').forEach(function (el) { el.hidden = !isEN; });
     document.querySelectorAll('[data-set-lang]').forEach(function (b) {
-      b.setAttribute('aria-pressed', String(b.getAttribute('data-set-lang') === state.lang));
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-set-lang') === (isEN ? 'en' : 'zh')));
     });
 
-    var t = copy();
+    var t = COPY[isEN ? 'en' : 'zh'];
     document.title = t.title;
-    var md = document.querySelector('meta[name="description"]');
-    if (md) md.setAttribute('content', t.desc);
-    var ot = document.querySelector('meta[property="og:title"]');
-    if (ot) ot.setAttribute('content', t.ogTitle);
-    var od = document.querySelector('meta[property="og:description"]');
-    if (od) od.setAttribute('content', t.ogDesc);
-
-    render();
-    mark(state.guess);
+    if (metaDesc) metaDesc.setAttribute('content', t.desc);
+    if (ogTitle) ogTitle.setAttribute('content', t.ogTitle);
+    if (ogDesc) ogDesc.setAttribute('content', t.ogDesc);
+    if (shot) shot.alt = t.shotAlt;
   }
 
   var saved = null;
@@ -697,96 +543,6 @@ footer a:hover { color: var(--fg); }
       try { localStorage.setItem(KEY, lang); } catch (e) {}
     });
   });
-
-  var modeBtn = byId('mode');
-  if (modeBtn) {
-    modeBtn.addEventListener('click', function () {
-      state.mode = state.mode === 'mirror' ? 'direct' : 'mirror';
-      applyMode();
-    });
-  }
-
-  function size(bytes) {
-    if (!bytes) return '';
-    return (bytes / 1048576).toFixed(2) + ' MB';
-  }
-
-  function pick(assets, re) {
-    for (var i = 0; i < assets.length; i++) if (re.test(assets[i].name)) return assets[i];
-    return null;
-  }
-
-  function ua() {
-    var s = navigator.userAgent || '';
-    if (/Windows NT/i.test(s)) return 'windows';
-    if (/Mac OS X|Macintosh/i.test(s) && !/iPhone|iPad/i.test(s)) return 'mac';
-    return '';
-  }
-
-  /* 先把「推荐」标到可能的系统上；拿到架构信息后再细调一次。 */
-  function mark(os) {
-    document.querySelectorAll('.plat').forEach(function (el) {
-      var hit = el.dataset.os === os;
-      el.classList.toggle('rec', hit);
-      var tag = el.querySelector('[data-rec]');
-      if (tag) tag.hidden = !hit;
-    });
-  }
-
-  state.guess = ua();
-  mark(state.guess);
-
-  if (state.guess === 'mac' && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-    navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (v) {
-      state.guess = v.architecture === 'x86' ? 'mac-intel' : 'mac';
-      mark(state.guess);
-    }).catch(function () {});
-  }
-
-  function fill(key, asset) {
-    if (!asset) return;
-    document.querySelectorAll('[data-asset="' + key + '"]').forEach(function (a) {
-      bind(a, asset.browser_download_url);
-    });
-    var name = document.querySelector('[data-file="' + key + '"]');
-    if (name) name.textContent = asset.name;
-    var s = document.querySelector('[data-size="' + key + '"]');
-    if (s) s.textContent = size(asset.size);
-  }
-
-  fetch('https://api.github.com/repos/' + REPO + '/releases/latest', {
-    headers: { Accept: 'application/vnd.github+json' }
-  })
-    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(function (rel) {
-      var a = rel.assets || [];
-      var exe = pick(a, /x64-setup\.exe$/i) || pick(a, /\.exe$/i);
-      var arm = pick(a, /aarch64\.dmg$/i);
-      var intel = pick(a, /x64\.dmg$/i);
-
-      fill('exe', exe);
-      fill('dmg-arm', arm);
-      fill('dmg-x64', intel);
-
-      if (rel.tag_name) state.tag = rel.tag_name;
-
-      var hero = byId('hero-dl');
-      if (state.guess === 'windows' && exe) {
-        bind(hero, exe.browser_download_url);
-        state.heroKind = 'windows';
-      } else if (state.guess === 'mac' && (arm || intel)) {
-        bind(hero, (arm || intel).browser_download_url);
-        state.heroKind = 'mac';
-      } else if (rel.tag_name) {
-        bind(hero, rel.html_url || LATEST);
-        state.heroKind = 'default';
-      }
-      render();
-    })
-    .catch(function () {
-      state.failed = true;
-      render();
-    });
 })();
 </script>
 </body>

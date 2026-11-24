@@ -96,13 +96,34 @@ pub fn is_playlist_folder(name: &str, entries: &[String]) -> bool {
     })
 }
 
+/// 列歌单的结果。
+#[derive(Debug, Clone)]
+pub struct S3PlaylistListing {
+    /// 歌单列表；listed == false 时只有本地记录，count 全是 0
+    pub playlists: Vec<S3PlaylistInfo>,
+    /// 这次到底列没列到桶：false = 离线 / 连不上 / 鉴权失败
+    pub listed: bool,
+}
+
 /// 本地记录的歌单 + 网盘上的目录，并统计曲目数。
 ///
 /// 列不到桶（离线 / 配置错误）时只返回本地记录，不把列表清空。
+/// 想区分「列到了但确实为空」和「压根没列到」，用 [`list_s3_playlists_report`]。
 pub async fn list_s3_playlists(
     client: &S3,
     storage: &Storage,
 ) -> Result<Vec<S3PlaylistInfo>, String> {
+    Ok(list_s3_playlists_report(client, storage).await?.playlists)
+}
+
+/// 同 [`list_s3_playlists`]，但把「这次到底列没列到桶」一并给出来。
+///
+/// 壳层靠它区分「网盘上真没有歌单」和「离线时只拿得到本地记录」：
+/// 后者如果当成加载成功，界面就会显示一堆 0 首的空歌单，而不是退回离线缓存。
+pub async fn list_s3_playlists_report(
+    client: &S3,
+    storage: &Storage,
+) -> Result<S3PlaylistListing, String> {
     let mut names = storage.list_s3_playlists().map_err(|e| e.to_string())?;
 
     let mut folders: HashMap<String, Vec<String>> = HashMap::new();
@@ -113,7 +134,9 @@ pub async fn list_s3_playlists(
     } else {
         format!("{}/", prefix)
     };
+    let mut listed = false;
     if let Ok(keys) = client.list_keys_all(&scope).await {
+        listed = true;
         for key in &keys {
             if is_root_key(key, &prefix) {
                 root_keys.push(key.clone());
@@ -202,7 +225,10 @@ pub async fn list_s3_playlists(
             root: true,
         });
     }
-    Ok(out)
+    Ok(S3PlaylistListing {
+        playlists: out,
+        listed,
+    })
 }
 
 pub fn parse_track_filename(stem: &str) -> (String, String) {
@@ -796,5 +822,41 @@ mod tests {
         assert!(sanitize_playlist_name("..").is_err());
         assert!(sanitize_playlist_name(FAVORITES_PLAYLIST).is_err());
         assert!(sanitize_playlist_name(ROOT_PLAYLIST_LABEL).is_err());
+    }
+
+    /// 离线刷新歌单：core 只拿得到本地记录（count 全 0），必须同时报告「没列到桶」，
+    /// 壳层才能退回离线缓存，而不是显示一堆 0 首的空歌单。
+    #[tokio::test]
+    async fn offline_listing_reports_not_listed() {
+        use crate::http::HttpClient;
+        use crate::s3::{S3Config, S3};
+        use crate::storage::Storage;
+
+        let dir = std::env::temp_dir().join(format!("tm-core-offline-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let storage = Storage::open(dir.join("t.db")).unwrap();
+        storage.save_s3_playlist("通勤").unwrap();
+
+        // 127.0.0.1:1 会被立刻拒绝：等价于「没网 / 连不上桶」
+        let client = S3::new(
+            S3Config {
+                endpoint: "http://127.0.0.1:1".into(),
+                bucket: "music".into(),
+                access_key: "ak".into(),
+                secret_key: "sk".into(),
+                prefix: "TinyMusic".into(),
+                path_style: true,
+                ..Default::default()
+            },
+            HttpClient::new(0, 1).client().clone(),
+        );
+
+        let listing = list_s3_playlists_report(&client, &storage).await.unwrap();
+        assert!(!listing.listed, "连不上桶时必须报告 listed = false");
+        assert_eq!(listing.playlists.len(), 1);
+        assert_eq!(listing.playlists[0].name, "通勤");
+        assert_eq!(listing.playlists[0].count, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -2,7 +2,7 @@
 
 一个 4.5 MB 的桌面音乐客户端。搜索、试听、下载、歌词、网盘，都在一个窗口里。
 
-**[官网与下载](https://redcarl.github.io/TinyMusic/)** · **[源码](https://github.com/RedCarl/TinyMusic)** · **[问题反馈](https://github.com/RedCarl/TinyMusic/issues)**
+**[官网](https://tinymusic.carljoy.cn/)** · **[iOS 版页面](https://tinymusic.carljoy.cn/tinymusic/)** · 问题反馈：carl030101@icloud.com
 
 ![TinyMusic 主界面：左侧导航、每日推荐、歌单与底部播放器](desktop/site/assets/screenshot.jpg)
 
@@ -25,7 +25,7 @@ TinyMusic 是一个 Windows / macOS 上的音乐客户端。它把「找歌 → 
     desktop/crates/server    本地 HTTP API（桌面调试 / S3 桩）
     desktop/packages/shared  前端公共库（桌面仍在用：类型 / API 契约 / 队列 / 格式化 / 歌词 / EQ 预设）
     desktop/packages/theme   设计令牌单源（desktop/src/app.css；native 用系统色/材质）
-    desktop/site             官网与隐私政策（GitHub Pages）
+    desktop/site             官网与隐私政策（部署在 tinymusic.carljoy.cn）
     desktop/tools            开发脚本
     desktop/docs             项目文档
 
@@ -75,6 +75,8 @@ iOS 客户端已独立到私有仓库，不再开源；本仓库只包含桌面�
 - 兼容 AWS S3、MinIO、Cloudflare R2 等 S3 协议服务
 - 每个歌单对应桶里的一个目录，可新建、重命名、排序、删除、整张播放
 - 「喜欢」是网盘上的一份清单（`favorites.json`），换电脑后自动合并；歌单里已经有的歌不会再复制一份
+- 网盘页、播放栏、播放列表、歌曲详情页都能直接点红心，网盘里已有的歌只记一条清单，不再复制文件
+- 旧版本写下的清单（0.7.x 及更早是整份 Track 数组）升级后自动迁移成新格式；实在读不懂的会先备份成 `favorites.json.backup-*.json` 再从「喜欢」目录和本地记录重建，不会卡住整个喜欢列表
 - 平台歌单可以一键导入网盘，任务在后台排队跑，不用守着窗口
 
 ### 账号（可选）
@@ -94,7 +96,7 @@ iOS 客户端已独立到私有仓库，不再开源；本仓库只包含桌面�
 
 ## 下载与安装
 
-安装包都在这一个页面：**<https://redcarl.github.io/TinyMusic/>**
+仓库已转为私有，官网 <https://tinymusic.carljoy.cn/> 只做产品展示，不再对外提供安装包；分发走仓库内的 GitHub Releases（仅受邀协作者可访问）。
 
 | 平台 | 要求 |
 |---|---|
@@ -106,7 +108,7 @@ iOS 客户端已独立到私有仓库，不再开源；本仓库只包含桌面�
 - 安装包约 3–4 MB，新版本可以在「设置 → 版本」里检查更新
 - macOS 首次打开若提示「已损坏」，在 Finder 里右键选择「打开」即可（安装包没有做 Apple 公证）
 - Windows 安装包暂未做代码签名，SmartScreen 若提示「未知发布者」，选择「仍要运行」
-- 历史版本都在 [GitHub Releases](https://github.com/RedCarl/TinyMusic/releases)
+- 历史版本在仓库的 Releases 页面（私有，需受邀访问）
 
 ---
 
@@ -150,8 +152,8 @@ iOS 客户端已独立到私有仓库，不再开源；本仓库只包含桌面�
 
 ## 更多
 
-- 源码与问题反馈：<https://github.com/RedCarl/TinyMusic>
-- 如果它好用，欢迎点个 Star。
+- 官网：<https://tinymusic.carljoy.cn/>
+- 问题反馈：carl030101@icloud.com
 - 给开发者看的技术细节在 [`desktop/docs/`](desktop/docs/)：音质调研、界面材质、音源扩展。
 
 <details>
