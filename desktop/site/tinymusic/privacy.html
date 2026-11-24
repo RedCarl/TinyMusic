@@ -187,10 +187,10 @@ footer a:hover { color: var(--fg); text-decoration: none; }
   <!-- ========== 中文 ========== -->
   <section data-zh>
     <h1>隐私政策</h1>
-    <p class="updated">最后更新：2026 年 11 月 18 日</p>
+    <p class="updated">最后更新：2026 年 11 月 24 日</p>
 
     <div class="card">
-      <p><strong>一句话：TinyMusic iOS 不收集你的任何数据。</strong>没有账号、没有曲库、没有广告，也没有第三方 SDK；App 只跟你自己的 S3 存储和 Apple 的 iCloud 服务通信。</p>
+      <p><strong>一句话：TinyMusic iOS 不收集你的任何数据。</strong>没有账号、没有曲库、没有广告，也没有第三方 SDK；App 只跟你自己的网盘（S3 / WebDAV）、你选择的本地或 iCloud Drive 文件夹，以及 Apple 的 iCloud 服务通信。</p>
     </div>
 
     <h2>我们不收集什么</h2>
@@ -203,20 +203,20 @@ footer a:hover { color: var(--fg); text-decoration: none; }
 
     <h2>保存在你设备上的数据</h2>
     <ul>
-      <li><strong>S3 凭据</strong>：Access Key / Secret Key 只写入 iOS Keychain，不写进本机的设置文件；开启 iCloud 钥匙串时，可能通过 Apple 的端到端加密同步到你自己的其他设备。</li>
-      <li><strong>播放器设置</strong>：S3 endpoint、region、bucket、prefix、缓存上限、仅 Wi-Fi、EQ 等非敏感设置保存在本机，可能通过 iCloud Key-Value Storage 在你自己的设备间同步。</li>
+      <li><strong>网盘凭据</strong>：S3 的 Access Key / Secret Key、WebDAV 的用户名和密码只写入 iOS Keychain，不写进本机的设置文件；开启 iCloud 钥匙串时，可能通过 Apple 的端到端加密同步到你自己的其他设备。</li>
+      <li><strong>播放器设置</strong>：S3 / WebDAV 的地址、region、bucket、前缀、缓存上限、仅 Wi-Fi、EQ 等非敏感设置保存在本机，可能通过 iCloud Key-Value Storage 在你自己的设备间同步。文件夹授权（security-scoped bookmark）只保存在本机，不进入 iCloud。</li>
       <li><strong>离线缓存</strong>：音频、歌词、封面只存在 App 沙盒里，已排除 iCloud 备份，不能导出或分享，也不会出现在「文件」App 中。</li>
-      <li><strong>收藏</strong>：默认写到你 S3 桶里的 <code>favorites.json</code>；密钥只读时退回本机，不写桶。</li>
+      <li><strong>收藏</strong>：默认写到你网盘里的 <code>favorites.json</code>；只读网盘（包括本地 / iCloud 文件夹）不会写入，收藏入口也不可用。</li>
     </ul>
 
     <h2>网络请求</h2>
-    <p>App 只连接你在设置里填写的 S3 endpoint，以及 Apple 提供的 iCloud / Keychain 服务。音频、歌词、封面和收藏直接与你的存储服务交换，不经过 TinyMusic 的中转服务器。App 内没有统计、广告或崩溃上报请求。</p>
+    <p>App 只连接你在设置里填写的 S3 endpoint / WebDAV 服务器、你选择的本地或 iCloud Drive 文件夹，以及 Apple 提供的 iCloud / Keychain 服务。音频、歌词、封面和收藏直接与你的存储服务交换，不经过 TinyMusic 的中转服务器；WebDAV 鉴权播放通过本机 127.0.0.1 回环代理完成，数据不会离开设备。App 内没有统计、广告或崩溃上报请求。</p>
 
     <h2>第三方服务</h2>
-    <p>没有集成任何第三方 SDK。AWS S3、Cloudflare R2、MinIO 等存储服务由各自的提供方运营，受其条款与隐私政策约束；TinyMusic 与这些服务没有隶属关系。</p>
+    <p>没有集成任何第三方 SDK。AWS S3、Cloudflare R2、MinIO、WebDAV 服务以及 iCloud Drive 由各自的提供方运营，受其条款与隐私政策约束；TinyMusic 与这些服务没有隶属关系。</p>
 
     <h2>你的控制</h2>
-    <p>你可以在设置里断开 S3、清除缓存，或在系统里删除 App 以移除本机数据。桶里的 <code>favorites.json</code> 需要你在自己的存储服务中删除。</p>
+    <p>你可以在设置里断开或删除网盘、清除缓存、撤销文件夹授权，或在系统里删除 App 以移除本机数据。网盘里的 <code>favorites.json</code> 需要你在自己的存储服务中删除；本地 / iCloud 文件夹里的文件不会被 App 修改。</p>
 
     <h2>儿童隐私</h2>
     <p>App 不收集任何人的数据，包括儿童，也不收集年龄信息。</p>
@@ -231,10 +231,10 @@ footer a:hover { color: var(--fg); text-decoration: none; }
   <!-- ========== English ========== -->
   <section data-en hidden>
     <h1>Privacy Policy</h1>
-    <p class="updated">Last updated: November 18, 2026</p>
+    <p class="updated">Last updated: November 24, 2026</p>
 
     <div class="card">
-      <p><strong>In one sentence: TinyMusic for iOS collects no data about you.</strong> No accounts, no catalogue, no ads, no third-party SDKs. The app talks only to your own S3 storage and Apple's iCloud services.</p>
+      <p><strong>In one sentence: TinyMusic for iOS collects no data about you.</strong> No accounts, no catalogue, no ads, no third-party SDKs. The app talks only to your own drives (S3 / WebDAV), folders you choose on this device or in iCloud Drive, and Apple's iCloud services.</p>
     </div>
 
     <h2>What we don't collect</h2>
@@ -247,20 +247,20 @@ footer a:hover { color: var(--fg); text-decoration: none; }
 
     <h2>Data stored on your device</h2>
     <ul>
-      <li><strong>S3 credentials:</strong> Access Key / Secret Key are written only to the iOS Keychain, never to a settings file on disk. With iCloud Keychain on, they may sync to your other devices through Apple's end-to-end encrypted keychain.</li>
-      <li><strong>Player settings:</strong> non-sensitive settings — S3 endpoint, region, bucket, prefix, cache cap, Wi-Fi only, EQ — are stored on this device and may sync between your own devices via iCloud Key-Value Storage.</li>
+      <li><strong>Drive credentials:</strong> S3 Access Key / Secret Key and WebDAV username / password are written only to the iOS Keychain, never to a settings file on disk. With iCloud Keychain on, they may sync to your other devices through Apple's end-to-end encrypted keychain.</li>
+      <li><strong>Player settings:</strong> non-sensitive settings — S3 / WebDAV address, region, bucket, prefix, cache cap, Wi-Fi only, EQ — are stored on this device and may sync between your own devices via iCloud Key-Value Storage. Folder access (a security-scoped bookmark) stays on this device and is never synced.</li>
       <li><strong>Offline cache:</strong> audio, lyrics and covers live inside the app sandbox, are excluded from iCloud backup, cannot be exported or shared, and never appear in the Files app.</li>
-      <li><strong>Favourites:</strong> by default written to <code>favorites.json</code> in your S3 bucket; with a read-only key they stay on this device and the bucket is left untouched.</li>
+      <li><strong>Favourites:</strong> by default written to <code>favorites.json</code> in your drive; read-only drives (including local / iCloud folders) are never written to, and favourites are unavailable there.</li>
     </ul>
 
     <h2>Network requests</h2>
-    <p>The app connects only to the S3 endpoint you enter in Settings and to Apple's iCloud / Keychain services. Audio, lyrics, covers and favourites are exchanged directly with your storage provider and never pass through a TinyMusic relay. There are no analytics, advertising or crash-reporting requests.</p>
+    <p>The app connects only to the S3 endpoint / WebDAV server you enter in Settings, folders you choose on this device or in iCloud Drive, and Apple's iCloud / Keychain services. Audio, lyrics, covers and favourites are exchanged directly with your storage provider and never pass through a TinyMusic relay; WebDAV playback uses a local 127.0.0.1 proxy, so data stays on your device. There are no analytics, advertising or crash-reporting requests.</p>
 
     <h2>Third-party services</h2>
-    <p>No third-party SDKs are integrated. AWS S3, Cloudflare R2, MinIO and similar services are run by their own providers under their own terms and privacy policies; TinyMusic is not affiliated with them.</p>
+    <p>No third-party SDKs are integrated. AWS S3, Cloudflare R2, MinIO, WebDAV services and iCloud Drive are run by their own providers under their own terms and privacy policies; TinyMusic is not affiliated with them.</p>
 
     <h2>Your controls</h2>
-    <p>You can disconnect S3 and clear the cache in Settings, or delete the app to remove on-device data. <code>favorites.json</code> in your bucket has to be deleted through your own storage service.</p>
+    <p>You can disconnect or remove a drive, clear the cache, revoke folder access in Settings, or delete the app to remove on-device data. <code>favorites.json</code> on your drive has to be deleted through your own storage service; files in local / iCloud folders are never modified by the app.</p>
 
     <h2>Children's privacy</h2>
     <p>The app collects no data from anyone, children included, and collects no age information.</p>

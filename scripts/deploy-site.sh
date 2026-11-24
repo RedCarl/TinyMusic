@@ -6,7 +6,7 @@ set -euo pipefail
 KEY="${SSH_KEY:-$HOME/.ssh/1panel_114}"
 HOST="${DEPLOY_HOST:-root@114.66.54.114}"
 SITE="tinymusic.carljoy.cn"
-DEST="/opt/1panel/www/sites/${SITE}/index/"
+DEST="/opt/1panel/www/sites/tinymusic/index/"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="${ROOT}/desktop/site/"
 

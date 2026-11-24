@@ -192,13 +192,13 @@ footer a:hover { color: var(--fg); text-decoration: none; }
     <div class="card">
       <p><strong>问题反馈：</strong><a href="mailto:carl030101@icloud.com">carl030101@icloud.com</a><br>
       <strong>产品主页：</strong><a href="./index.html">TinyMusic iOS</a> · <a href="../index.html">桌面版</a></p>
-      <p>写信时附上 iOS 版本、S3 服务类型和复现步骤，会快很多；<strong>不要贴完整的 Access Key / Secret Key</strong>。</p>
+      <p>写信时附上 iOS 版本、网盘类型（S3 / WebDAV / 文件夹）和复现步骤，会快很多；<strong>不要贴完整的 Access Key / Secret Key 或 WebDAV 密码</strong>。</p>
     </div>
 
     <h2>第一次使用</h2>
     <ol>
-      <li>准备一个 S3 兼容存储桶，例如 AWS S3、Cloudflare R2 或 MinIO。</li>
-      <li>在 App 里填 endpoint、region、bucket、prefix、Access Key 和 Secret Key。</li>
+      <li>准备一个 S3 兼容存储桶（AWS S3、Cloudflare R2、MinIO 等）、一个 WebDAV 服务器，或一个本地 / iCloud Drive 文件夹。</li>
+      <li>S3 填 endpoint、region、bucket、prefix、Access Key 和 Secret Key；WebDAV 填服务器地址、根目录、用户名和密码；文件夹直接从「文件」里选择（只读）。</li>
       <li>桶内按 <code>前缀/歌单/歌手 - 歌名.m4a</code> 放文件；同名 <code>.lrc</code> 和 <code>.jpg/.png/.webp</code> 会作为歌词和封面。</li>
       <li>保存后回到资料库，选择歌单播放。</li>
     </ol>
@@ -207,16 +207,16 @@ footer a:hover { color: var(--fg); text-decoration: none; }
     <p>在歌单或歌曲上点“缓存”，App 会用后台 URLSession 把音频、歌词、封面存进沙盒。缓存只用于 App 内播放，不能导出或分享，不出现在「文件」App 里，也不会进入 iCloud 备份。</p>
 
     <h2>iCloud</h2>
-    <p>S3 密钥写入 Keychain；开启 iCloud 钥匙串后可在自己的设备间同步。endpoint、bucket、prefix、缓存上限、仅 Wi-Fi、EQ 等非敏感设置走 iCloud Key-Value Storage。离线缓存不同步。</p>
+    <p>S3 密钥、WebDAV 用户名和密码写入 Keychain；开启 iCloud 钥匙串后可在自己的设备间同步。S3 / WebDAV 地址、bucket、prefix、缓存上限、仅 Wi-Fi、EQ 等非敏感设置走 iCloud Key-Value Storage；文件夹授权只保存在本机，换设备需重新选择。离线缓存不同步。</p>
 
     <h2>常见问题</h2>
     <p><strong>为什么歌单是空的？</strong>检查 prefix 是否和桶内目录一致，以及 Access Key 是否有 ListBucket / GetObject 权限。</p>
-    <p><strong>为什么只能看不能收藏？</strong>只读密钥无法写 <code>favorites.json</code>，收藏会退回本机。</p>
+    <p><strong>为什么只能看不能收藏？</strong>本地 / iCloud 文件夹是只读盘，不写 <code>favorites.json</code>，收藏入口会隐藏；S3 只读密钥写入失败时会提示。</p>
     <p><strong>为什么播放失败？</strong>确认 endpoint 使用 HTTPS、bucket 允许 CORS 或公开读取，或使用预签名 URL 所需权限。</p>
     <p><strong>缓存和下载有什么区别？</strong>缓存只是 App 内部的离线副本，不能导出、分享或搬到别的播放器。</p>
 
     <h2>隐私</h2>
-    <p>App 不收集账号、播放记录或缓存内容，只连接你自己的 S3 存储与 Apple 的 iCloud / Keychain 服务。详见 <a href="privacy.html">隐私政策</a>。</p>
+    <p>App 不收集账号、播放记录或缓存内容，只连接你自己的网盘、选择的文件夹与 Apple 的 iCloud / Keychain 服务。详见 <a href="privacy.html">隐私政策</a>。</p>
   </section>
 
   <!-- ========== English ========== -->
@@ -227,13 +227,13 @@ footer a:hover { color: var(--fg); text-decoration: none; }
     <div class="card">
       <p><strong>Email:</strong> <a href="mailto:carl030101@icloud.com">carl030101@icloud.com</a><br>
       <strong>Product page:</strong> <a href="./index.html">TinyMusic for iOS</a> · <a href="../index.html">Desktop app</a></p>
-      <p>Include your iOS version, the S3 provider and the steps to reproduce — and <strong>never paste full Access Key / Secret Key</strong>.</p>
+      <p>Include your iOS version, the drive type (S3 / WebDAV / folder) and the steps to reproduce — and <strong>never paste full Access Key / Secret Key or WebDAV passwords</strong>.</p>
     </div>
 
     <h2>Getting started</h2>
     <ol>
-      <li>Prepare an S3-compatible bucket — AWS S3, Cloudflare R2 or MinIO, for example.</li>
-      <li>In the app, fill in endpoint, region, bucket, prefix, Access Key and Secret Key.</li>
+      <li>Prepare an S3-compatible bucket (AWS S3, Cloudflare R2, MinIO and similar), a WebDAV server, or a local / iCloud Drive folder.</li>
+      <li>For S3, fill in endpoint, region, bucket, prefix, Access Key and Secret Key; for WebDAV, enter the server address, root folder, username and password; for a folder, pick it from Files (read-only).</li>
       <li>Lay out files as <code>prefix/playlist/artist - title.m4a</code>; a matching <code>.lrc</code> and <code>.jpg/.png/.webp</code> become the lyrics and cover.</li>
       <li>Save, go back to the library and pick a playlist to play.</li>
     </ol>
@@ -242,16 +242,16 @@ footer a:hover { color: var(--fg); text-decoration: none; }
     <p>Tap "Cache" on a playlist or a track and the app downloads the audio, lyrics and cover into its sandbox with a background URLSession. The cache is for in-app playback only: it can't be exported or shared, never shows up in the Files app, and is excluded from iCloud backup.</p>
 
     <h2>iCloud</h2>
-    <p>S3 keys go into the Keychain, and sync across your own devices when iCloud Keychain is on. Non-sensitive settings — endpoint, bucket, prefix, cache cap, Wi-Fi only, EQ — use iCloud Key-Value Storage. Offline cache is never synced.</p>
+    <p>S3 keys and WebDAV username / password go into the Keychain, and sync across your own devices when iCloud Keychain is on. Non-sensitive settings — S3 / WebDAV address, bucket, prefix, cache cap, Wi-Fi only, EQ — use iCloud Key-Value Storage; folder access stays on this device, so you reselect it on a new device. Offline cache is never synced.</p>
 
     <h2>FAQ</h2>
     <p><strong>Why is the playlist empty?</strong> Check that the prefix matches the folder layout in your bucket, and that the Access Key can ListBucket and GetObject.</p>
-    <p><strong>Why can I only read, not favourite?</strong> A read-only key can't write <code>favorites.json</code>, so favourites fall back to this device.</p>
+    <p><strong>Why can I only read, not favourite?</strong> Local / iCloud folders are read-only drives, so TinyMusic never writes <code>favorites.json</code> and hides favourites; a read-only S3 key shows an error if the write fails.</p>
     <p><strong>Why does playback fail?</strong> Make sure the endpoint uses HTTPS, the bucket allows CORS or public reads, or that the key may sign URLs.</p>
     <p><strong>How is the cache different from a download?</strong> The cache is only an offline copy inside the app; you can't export it, share it or move it to another player.</p>
 
     <h2>Privacy</h2>
-    <p>The app collects no accounts, play history or cached content. It talks only to your own S3 storage and Apple's iCloud / Keychain services. See the <a href="privacy.html">privacy policy</a>.</p>
+    <p>The app collects no accounts, play history or cached content. It talks only to your own drives, the folders you choose, and Apple's iCloud / Keychain services. See the <a href="privacy.html">privacy policy</a>.</p>
   </section>
 
   <footer>

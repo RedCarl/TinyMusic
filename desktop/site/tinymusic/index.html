@@ -185,13 +185,13 @@ footer a:hover { color: var(--fg); text-decoration: none; }
     </header>
 
 <main id="top">
-    <p class="eyebrow">iOS 18+ · 1.0 · SwiftUI</p>
+    <p class="eyebrow">iOS 18+ · 1.0.3 · SwiftUI</p>
 
     <h1><span data-zh>只播你<em>自己的</em>歌。</span><span data-en hidden>Plays <em>your own</em> music.</span></h1>
 
     <p class="lead">
-      <span data-zh>TinyMusic iOS 是一个只播放你自己 S3 兼容存储内容的本地播放器。没有在线曲库、搜索、平台下载或账号登录。</span>
-      <span data-en hidden>TinyMusic for iOS is a local player that plays only what lives in your own S3-compatible storage. No online catalogue, no search, no platform downloads, no sign-in.</span>
+      <span data-zh>TinyMusic iOS 是一个只播放你自己网盘音乐的原生播放器：支持多个 S3 / WebDAV 网盘，也能读取本地或 iCloud Drive 文件夹。没有在线曲库、搜索、平台下载或账号登录。</span>
+      <span data-en hidden>TinyMusic for iOS is a native player for the music in your own drives: connect multiple S3 / WebDAV drives, or read a local or iCloud Drive folder. No online catalogue, no search, no platform downloads, no sign-in.</span>
     </p>
 
     <div class="actions">
@@ -203,12 +203,13 @@ footer a:hover { color: var(--fg); text-decoration: none; }
 
     <div class="card">
       <ul class="ticks">
-        <li><span data-zh>S3 兼容存储浏览：AWS S3、Cloudflare R2、MinIO 等。</span><span data-en hidden>S3-compatible browsing: AWS S3, Cloudflare R2, MinIO and friends.</span></li>
-        <li><span data-zh>AVPlayer 直连预签名 URL 流式播放，支持后台音频与锁屏控制。</span><span data-en hidden>Streaming through AVPlayer against presigned URLs, with background audio and lock-screen controls.</span></li>
+        <li><span data-zh>多网盘：多个 S3（AWS、R2、MinIO 等）与 WebDAV，可命名、排序、随时切换。</span><span data-en hidden>Multiple drives: several S3 stores (AWS, R2, MinIO and friends) plus WebDAV, each nameable, reorderable and switchable.</span></li>
+        <li><span data-zh>本地 / iCloud Drive 文件夹（只读），iCloud 文件按需下载。</span><span data-en hidden>Local and iCloud Drive folders (read-only), with on-demand iCloud downloads.</span></li>
+        <li><span data-zh>AVPlayer 流式播放：S3 预签名直连，WebDAV 走本机回环代理；后台音频与锁屏控制。</span><span data-en hidden>AVPlayer streaming: presigned URLs for S3, a local loopback proxy for WebDAV, with background audio and lock-screen controls.</span></li>
         <li><span data-zh>把指定歌曲或整张歌单离线缓存，断网也能听。</span><span data-en hidden>Cache individual tracks or a whole playlist for offline listening.</span></li>
-        <li><span data-zh>收藏写回桶里的 <code>favorites.json</code>；只读密钥时退回本机。</span><span data-en hidden>Favourites are written back to <code>favorites.json</code> in your bucket, and stay on-device with a read-only key.</span></li>
+        <li><span data-zh>收藏写回网盘里的 <code>favorites.json</code>；只读网盘不写入，收藏入口隐藏。</span><span data-en hidden>Favourites are written back to <code>favorites.json</code> on your drive; read-only drives are never written to and hide favourites.</span></li>
         <li><span data-zh>10 段 EQ、12 套预设与前级增益。</span><span data-en hidden>10-band EQ with 12 presets and pre-gain.</span></li>
-        <li><span data-zh>iCloud 同步 S3 配置与 EQ；密钥走 iCloud 钥匙串。</span><span data-en hidden>iCloud syncs your S3 settings and EQ; keys ride in iCloud Keychain.</span></li>
+        <li><span data-zh>iCloud 同步网盘配置与 EQ；密钥走 iCloud 钥匙串，文件夹授权只留在本机。</span><span data-en hidden>iCloud syncs drive settings and EQ; credentials ride in iCloud Keychain, and folder access stays on-device.</span></li>
         <li><span data-zh>Liquid Glass 界面，浅色与深色跟随系统。</span><span data-en hidden>Liquid Glass interface that follows the system light and dark appearance.</span></li>
       </ul>
     </div>
@@ -228,9 +229,9 @@ footer a:hover { color: var(--fg); text-decoration: none; }
 (function () {
   var KEY = 'tinymusic-lang';
   var TITLES = { zh: "TinyMusic iOS — 只播放你自己存储里的歌", en: "TinyMusic for iOS — play only what you store" };
-  var DESCS = { zh: "TinyMusic iOS 是一个只播放你自己 S3 兼容存储内容的本地播放器：S3 浏览、离线缓存、收藏、10 段 EQ、iCloud 配置同步。没有曲库、没有账号、没有广告。", en: "TinyMusic for iOS is a local player for your own S3-compatible storage: browsing, offline cache, favourites, a 10-band EQ and iCloud settings sync. No catalogue, no account, no ads." };
+  var DESCS = { zh: "TinyMusic iOS 播放你自己网盘里的音乐：多个 S3 / WebDAV 网盘、本地与 iCloud Drive 文件夹、离线缓存、收藏、10 段 EQ 与 iCloud 配置同步。没有曲库、没有账号、没有广告。", en: "TinyMusic for iOS plays the music in your own drives: multiple S3 / WebDAV stores, local and iCloud Drive folders, offline cache, favourites, a 10-band EQ and iCloud settings sync. No catalogue, no account, no ads." };
   var OG_TITLES = { zh: "TinyMusic iOS — 只播放你自己存储里的歌", en: "TinyMusic for iOS — play only what you store" };
-  var OG_DESCS = { zh: "TinyMusic iOS 是一个只播放你自己 S3 兼容存储内容的本地播放器：S3 浏览、离线缓存、收藏、10 段 EQ、iCloud 配置同步。没有曲库、没有账号、没有广告。", en: "TinyMusic for iOS is a local player for your own S3-compatible storage: browsing, offline cache, favourites, a 10-band EQ and iCloud settings sync. No catalogue, no account, no ads." };
+  var OG_DESCS = { zh: "TinyMusic iOS 播放你自己网盘里的音乐：多个 S3 / WebDAV 网盘、本地与 iCloud Drive 文件夹、离线缓存、收藏、10 段 EQ 与 iCloud 配置同步。没有曲库、没有账号、没有广告。", en: "TinyMusic for iOS plays the music in your own drives: multiple S3 / WebDAV stores, local and iCloud Drive folders, offline cache, favourites, a 10-band EQ and iCloud settings sync. No catalogue, no account, no ads." };
   var buttons = document.querySelectorAll('[data-set-lang]');
   var metaDesc = document.querySelector('meta[name="description"]');
   var ogTitle = document.querySelector('meta[property="og:title"]');
