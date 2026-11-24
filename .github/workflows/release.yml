@@ -73,7 +73,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: 'TinyMusic v__VERSION__'
           releaseBody: |
-            跨平台音乐客户端（Tauri + Svelte）。官网与下载页：https://redcarl.github.io/TinyMusic/
+            跨平台音乐客户端（Tauri + Svelte）。官网：https://tinymusic.carljoy.cn/（安装包在本 Release 的附件里，仓库私有）
 
             - Windows：`TinyMusic_<版本>_x64-setup.exe`，或用 `.msi`
             - macOS：`TinyMusic_<版本>_aarch64.dmg`（Apple 芯片）/ `TinyMusic_<版本>_x64.dmg`（Intel）
