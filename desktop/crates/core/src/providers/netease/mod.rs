@@ -1071,21 +1071,56 @@ impl MusicProvider for NeteaseProvider {
     }
 
     async fn recommend_playlists(&self) -> Result<Vec<PlaylistRef>> {
-        let v = self
+        // 1) 有登录态：个性化推荐（`v1/discovery/recommend/resource`，匿名会 301）
+        let last_err: Option<Error> = match self
             .api
             .post("v1/discovery/recommend/resource", json!({}))
+            .await
+        {
+            Ok(v) => {
+                let code = weapi::code_of(&v);
+                if code == 200 {
+                    let list: Vec<PlaylistRef> = v
+                        .get("recommend")
+                        .and_then(|r| r.as_array())
+                        .map(|arr| arr.iter().filter_map(Self::map_playlist).collect())
+                        .unwrap_or_default();
+                    if !list.is_empty() {
+                        return Ok(list);
+                    }
+                    Some(Error::Unsupported("推荐歌单为空".into()))
+                } else {
+                    Some(Error::Unsupported(format!(
+                        "{}（code={code}）",
+                        weapi::explain_code(code)
+                    )))
+                }
+            }
+            Err(e) => Some(e),
+        };
+
+        // 2) 没登录（或上面失败）：回落网页版首页那条匿名接口。
+        //    `personalized/playlist` 不需要 MUSIC_U，未登录也能出「推荐歌单」，
+        //    这样推荐页在没有登录态时也有内容可看。
+        let v = self
+            .api
+            .post("personalized/playlist", json!({ "limit": "12", "n": "1000" }))
             .await?;
         let code = weapi::code_of(&v);
         if code != 200 {
-            return Err(Error::Unsupported(format!(
-                "{}（code={code}）",
-                weapi::explain_code(code)
-            )));
+            return Err(last_err.unwrap_or_else(|| {
+                Error::Unsupported(format!("{}（code={code}）", weapi::explain_code(code)))
+            }));
         }
-        Ok(v.get("recommend")
+        let list: Vec<PlaylistRef> = v
+            .get("result")
             .and_then(|r| r.as_array())
             .map(|arr| arr.iter().filter_map(Self::map_playlist).collect())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if list.is_empty() {
+            return Err(last_err.unwrap_or_else(|| Error::Unsupported("推荐歌单为空".into())));
+        }
+        Ok(list)
     }
 
     async fn login_password(&self, user: &str, pass: &str) -> Result<Session> {

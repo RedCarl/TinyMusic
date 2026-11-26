@@ -5,7 +5,7 @@
   import { api } from '../lib/api';
   import { icons, ICON_SIZE } from '../lib/icons';
   import { account, setUid, clearNetease } from '../lib/account.svelte';
-  import { go, router } from '../lib/router.svelte';
+  import { go } from '../lib/router.svelte';
   import { showToast } from '../lib/toast.svelte';
   import { loginNetease, syncNeteaseSession } from '../lib/neteaseLogin';
   import { t } from '../lib/i18n.svelte';
@@ -111,8 +111,7 @@
   async function neteaseLogout() {
     await api.logout('netease').catch(() => {});
     clearNetease();
-    // 登出后「推荐」会从侧边栏消失，停在那一页就成了无入口的死页面
-    if (router.route.name === 'recommend') go({ name: 'search' });
+    // 推荐页没登录也能用（匿名每日推荐 + 推荐歌单），不用把用户从那一页赶走
     showToast(t('已登出网易云'));
   }
 

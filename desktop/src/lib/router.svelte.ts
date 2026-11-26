@@ -1,5 +1,4 @@
 import type { Track } from './api';
-import { hasNetease } from './account.svelte';
 
 /**
  * 路由表。
@@ -34,12 +33,12 @@ const TOP_LEVEL: ReadonlySet<Route['name']> = new Set([
 ]);
 
 /**
- * 起始页：登录网易云之后「推荐」就是首页，没登录才落到搜索。
+ * 起始页：推荐是首页，登录与否都一样（没登录也能看到匿名推荐内容）。
  *
  * 放在模块初始化里算，而不是 onMount 再跳 —— 后者会先闪一下搜索页。
  */
 function initialRoute(): Route {
-  return hasNetease() ? { name: 'recommend' } : { name: 'search' };
+  return { name: 'recommend' };
 }
 
 export const router = $state<{ route: Route; history: Route[] }>({

@@ -279,16 +279,12 @@
 
   // 侧边栏按 Apple Music 的分组方式排：顶部单项、资料库、其他、底部账号
   //
-  // 「推荐」是网易云专属页面：登录后它同时是首页，排在「搜索」前面；
-  // 没登录时整项不出现——它没有内容可看，留着只会占位。
-  const navTop = $derived(
-    hasNetease()
-      ? [
-          { name: 'recommend', label: t('推荐'), icon: icons.hot },
-          { name: 'search', label: t('搜索'), icon: icons.search }
-        ]
-      : [{ name: 'search', label: t('搜索'), icon: icons.search }]
-  );
+  // 「推荐」排在「搜索」前面，也是首页。没登录也保留：
+  // 每日推荐与推荐歌单都有匿名结果可看，只有「我的歌单」那块要登录态。
+  const navTop = $derived([
+    { name: 'recommend', label: t('推荐'), icon: icons.hot },
+    { name: 'search', label: t('搜索'), icon: icons.search }
+  ]);
   // 「喜欢」存到网盘，只有网盘启用时才出现
   const navLibrary = $derived([
     ...(appCfg.s3Enabled ? [{ name: 'library', label: t('喜欢'), icon: icons.favorite }] : []),

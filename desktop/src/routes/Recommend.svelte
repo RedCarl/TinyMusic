@@ -70,19 +70,14 @@
   }
 
   async function load() {
-    if (!logged) {
-      songs = [];
-      recommended = [];
-      mine = [];
-      return;
-    }
     loading = true;
     err = '';
-    // 三块彼此独立：任何一个失败都不该拖垮整页
+    // 三块彼此独立：任何一个失败都不该拖垮整页。
+    // 没登录也照常拉：每日推荐与推荐歌单都有匿名结果，只有「我的歌单」要登录态。
     const [s, r, m] = await Promise.allSettled([
       api.recommendSongs('netease', 30),
       api.recommendPlaylists('netease'),
-      api.myPlaylists('netease')
+      logged ? api.myPlaylists('netease') : Promise.resolve<PlaylistRef[]>([])
     ]);
     if (s.status === 'fulfilled') songs = s.value;
     else err = String(s.reason);
@@ -150,9 +145,12 @@
     return () => window.removeEventListener('resize', onResize);
   });
 
-  // 登录态变化后自动刷新（从账号页登录完回到这里）
+  // 登录态变化后重新装配：登出要收掉「我的歌单」，登录要换成个性化结果
+  let seenLogged = logged;
   $effect(() => {
-    if (logged && songs.length === 0 && !loading) void load();
+    if (logged === seenLogged) return;
+    seenLogged = logged;
+    void load();
   });
 
   // 卡片尺寸（含窗口缩放、字体变化）变了就重新算能铺几首
@@ -176,19 +174,15 @@
 <div class="page">
   <h1>{t('推荐')}</h1>
 
-  {#if !logged}
-    <div class="empty">
-      <div class="big" aria-hidden="true">
-        <HugeiconsIcon icon={icons.favorite} size={ICON_SIZE.empty} />
-      </div>
-      <p>{t('登录网易云后可以看到每日推荐与推荐歌单')}</p>
-      <div class="chips">
-        <button onclick={login} disabled={busy}>{busy ? t('等待登录…') : t('登录')}</button>
-      </div>
-    </div>
-  {:else if skel.visible}
+  {#if skel.visible}
     <TrackListSkeleton rows={5} toolbar="none" />
   {:else}
+    {#if !logged}
+      <div class="signin">
+        <span>{t('登录网易云后可以看到个性化每日推荐与「我的歌单」')}</span>
+        <button onclick={login} disabled={busy}>{busy ? t('等待登录…') : t('登录')}</button>
+      </div>
+    {/if}
     {#if err}<ErrorNotice text={err} />{/if}
 
     <!-- 1) 每日推荐：左边大卡片（点进详情），右边只铺前 5 首 -->
@@ -325,8 +319,8 @@
       </div>
     {/if}
 
-    <!-- 3) 我的歌单：同样的卡片，换行排列 -->
-    {#if mine.length > 0}
+    <!-- 3) 我的歌单：同样的卡片，换行排列（没登录就没有这一块） -->
+    {#if logged && mine.length > 0}
       <div class="section-head"><span>{t('我的歌单 · {n}', { n: mine.length })}</span></div>
       <div class="wrap">
         {#each mine as pl (pl.id)}
@@ -608,6 +602,35 @@
 
   .fab:active {
     transform: scale(0.94);
+  }
+
+  /* 未登录时的一行提示：不进整页空状态，页面内容照常显示 */
+  .signin {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 720px;
+    margin: 0 0 2px;
+    padding: 10px 14px;
+    border-radius: var(--r-md);
+    background-color: var(--panel);
+    box-shadow: var(--pane-shadow-flat);
+    color: var(--fg3);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .signin button {
+    flex: none;
+    padding: 5px 13px;
+    border-radius: 999px;
+    background-color: var(--bg3);
+    color: var(--fg2);
+    font-size: 12px;
+  }
+
+  .signin button:hover:not(:disabled) {
+    color: var(--fg);
   }
 
   /* 我的歌单：与货架同样的卡片尺寸，换行铺满 */
