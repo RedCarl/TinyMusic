@@ -858,10 +858,16 @@ async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
     let _ = w.show();
     let _ = w.set_focus();
 
-    // 轮询 cookie：拿到 MUSIC_U 就关窗 + 后台校验 + 落库 + 通知前端
+    // 轮询 cookie：拿到 MUSIC_U → 校验通过才关窗 + 落库 + 通知前端。
+    //
+    // 顺序很重要：以前是「先关窗再校验」。上一条 MUSIC_U 过期时关窗发生在校验之前，
+    // 用户会看到窗口一闪就没、按钮一直转「等待登录…」，而弹窗已经没了、根本没法重新登录。
+    // 现在校验失败就把窗口留着（并提一次错），等新的 MUSIC_U 出现再校验。
     let handle = app.clone();
     std::thread::spawn(move || {
         let mut misses = 0u8;
+        // 已校验失败的 MUSIC_U：值没变就不再重复请求（否则每 500ms 打一次网易云）
+        let mut rejected: Option<String> = None;
         for _ in 0..720 {
             std::thread::sleep(std::time::Duration::from_millis(500));
             let Some(w) = handle.get_webview_window(NETEASE_LOGIN_LABEL) else {
@@ -881,10 +887,14 @@ async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
                 })
                 .map(|c| (c.name().to_string(), c.value().to_string()))
                 .collect();
-            if !picked
+            let Some(music_u) = picked
                 .iter()
-                .any(|(k, v)| k == "MUSIC_U" && !v.is_empty())
-            {
+                .find(|(k, v)| k == "MUSIC_U" && !v.is_empty())
+                .map(|(_, v)| v.clone())
+            else {
+                continue;
+            };
+            if rejected.as_deref() == Some(music_u.as_str()) {
                 continue;
             }
             let header = picked
@@ -892,9 +902,10 @@ async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
                 .join("; ");
-            let _ = w.close();
 
-            let state = handle.state::<AppState>();
+            // manage() 注册的是 Arc<AppState>（见 run() 里的 app.manage(state)）。
+            // 这里若按 AppState 取会直接 panic —— release 是 panic=abort，表现就是点了登录立刻闪退。
+            let state = handle.state::<Arc<AppState>>();
             let provider = state.provider("netease");
             let result = match provider {
                 Ok(p) => tauri::async_runtime::block_on(p.login_cookie(&header)),
@@ -906,13 +917,18 @@ async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
                     if let Ok(p) = state.provider("netease") {
                         p.set_session(&session);
                     }
+                    let _ = w.close();
                     let _ = handle.emit("netease://login", &session);
+                    return;
                 }
                 Err(e) => {
+                    // 过期 / 无效的 MUSIC_U：窗口留着，让用户在里面重新登录
+                    rejected = Some(music_u);
+                    let _ = w.show();
+                    let _ = w.set_focus();
                     let _ = handle.emit("netease://login_error", e.to_string());
                 }
             }
-            return;
         }
         // 超时：把窗口留着让用户自己关，但告知前端
         let _ = handle.emit("netease://login_timeout", "登录窗口已超时");
@@ -923,7 +939,7 @@ async fn netease_login_open(app: tauri::AppHandle) -> Result<(), String> {
 
 
 #[tauri::command]
-fn open_download_dir(state: State<'_, AppState>) -> Result<(), String> {
+fn open_download_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let dir = state.settings_snapshot().download_dir;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
@@ -1067,7 +1083,7 @@ pub fn run() {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let state = window.state::<AppState>();
+                let state = window.state::<Arc<AppState>>();
                 if state.settings_snapshot().close_to_tray {
                     api.prevent_close();
                     let _ = window.hide();
