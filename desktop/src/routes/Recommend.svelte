@@ -5,7 +5,6 @@
   import { icons, ICON_SIZE } from '../lib/icons';
   import { account } from '../lib/account.svelte';
   import { go } from '../lib/router.svelte';
-  import { loginNetease } from '../lib/neteaseLogin';
   import { playTrack } from '../lib/player.svelte';
   import { showToast } from '../lib/toast.svelte';
   import TrackRow from '../components/TrackRow.svelte';
@@ -21,7 +20,6 @@
   let mine = $state<PlaylistRef[]>([]);
   let loading = $state(false);
   let err = $state('');
-  let busy = $state(false);
 
   /** 悬浮播放按钮：记住正在准备的那一张，避免连点 */
   let fabBusy = $state('');
@@ -85,20 +83,6 @@
     if (m.status === 'fulfilled') mine = m.value;
     loading = false;
     requestAnimationFrame(measureShelf);
-  }
-
-  async function login() {
-    if (busy) return;
-    busy = true;
-    err = '';
-    try {
-      await loginNetease();
-      await load();
-    } catch (e) {
-      err = String(e);
-    } finally {
-      busy = false;
-    }
   }
 
   /** 打开歌单详情（每日推荐在 core 里被当成 id=daily 的「假歌单」，走同一个页面） */
@@ -177,12 +161,6 @@
   {#if skel.visible}
     <TrackListSkeleton rows={5} toolbar="none" />
   {:else}
-    {#if !logged}
-      <div class="signin">
-        <span>{t('登录网易云后可以看到个性化每日推荐与「我的歌单」')}</span>
-        <button onclick={login} disabled={busy}>{busy ? t('等待登录…') : t('登录')}</button>
-      </div>
-    {/if}
     {#if err}<ErrorNotice text={err} />{/if}
 
     <!-- 1) 每日推荐：左边大卡片（点进详情），右边只铺前 5 首 -->
@@ -602,35 +580,6 @@
 
   .fab:active {
     transform: scale(0.94);
-  }
-
-  /* 未登录时的一行提示：不进整页空状态，页面内容照常显示 */
-  .signin {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    max-width: 720px;
-    margin: 0 0 2px;
-    padding: 10px 14px;
-    border-radius: var(--r-md);
-    background-color: var(--panel);
-    box-shadow: var(--pane-shadow-flat);
-    color: var(--fg3);
-    font-size: 12px;
-    line-height: 1.6;
-  }
-
-  .signin button {
-    flex: none;
-    padding: 5px 13px;
-    border-radius: 999px;
-    background-color: var(--bg3);
-    color: var(--fg2);
-    font-size: 12px;
-  }
-
-  .signin button:hover:not(:disabled) {
-    color: var(--fg);
   }
 
   /* 我的歌单：与货架同样的卡片尺寸，换行铺满 */

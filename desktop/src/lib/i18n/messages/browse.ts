@@ -26,8 +26,6 @@ export const browse: Record<string, string> = {
   '每日推荐': 'Daily Mix',
   '每日推荐，{n} 首，查看全部': 'Daily Mix, {n} tracks, view all',
   '播放每日推荐': 'Play Daily Mix',
-  '登录网易云后可以看到个性化每日推荐与「我的歌单」':
-    'Sign in to NetEase for a personalised Daily Mix and your own playlists',
   '等待登录…': 'Waiting for sign-in…',
   '登录': 'Sign in',
   '根据你的口味生成 · {n} 首 · 每天 6:00 更新':
